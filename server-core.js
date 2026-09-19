@@ -10,6 +10,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const WsSocket = require('./tools/signal-server/ws_frame.cjs');
 const { SessionStore } = require('./tools/signal-server/session_store.cjs');
 const {
@@ -23,6 +24,14 @@ const {
 
 const PORT = Number(process.env.PORT) || 8090;
 const PUBLIC_DIR = path.join(__dirname, 'public');
+
+const SERVER_INSTANCE_ID = 'inst_' + crypto.randomBytes(4).toString('hex');
+const SERVER_STARTED_AT = Date.now();
+
+function codeFingerprint(code) {
+  if (!code || typeof code !== 'string') return 'none';
+  return crypto.createHash('sha256').update(code.trim()).digest('hex').slice(0, 8);
+}
 
 class UnifiedAppServer {
   constructor(options = {}) {
@@ -75,6 +84,7 @@ class UnifiedAppServer {
       });
 
       this.server.listen(this.port, () => {
+        console.log(`[SERVER_START] instanceId=${SERVER_INSTANCE_ID} startedAt=${SERVER_STARTED_AT} pid=${process.pid} port=${this.port}`);
         resolve(this.port);
       });
 
@@ -88,7 +98,7 @@ class UnifiedAppServer {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
 
-    // Health Check Endpoint
+    // Health Check Endpoint with safe process instance diagnostics
     if (url.pathname === '/health') {
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       res.writeHead(200);
@@ -96,6 +106,8 @@ class UnifiedAppServer {
         status: 'ok',
         service: 'app.karcast.app',
         version: PROTOCOL_VERSION,
+        serverInstanceId: SERVER_INSTANCE_ID,
+        serverStartedAt: SERVER_STARTED_AT,
         timestamp: Date.now()
       }));
       return;
@@ -193,6 +205,7 @@ class UnifiedAppServer {
 
   handleRegister(ws, msg, clientIp) {
     const session = this.sessionStore.registerPhoneSession(ws, clientIp);
+    console.log(`[REGISTER] instanceId=${SERVER_INSTANCE_ID} codeHash=${codeFingerprint(session.pairingCode)} sess=${session.sessionId.slice(-6)} activeSessions=${this.sessionStore.sessionsById.size}`);
     ws.send(createMessage(MSG_TYPES.REGISTERED, {
       sessionId: session.sessionId,
       pairingCode: session.pairingCode,
@@ -207,6 +220,9 @@ class UnifiedAppServer {
       ws.send(createErrorMessage(ERROR_CODES.PAIRING_CODE_INVALID, 'Missing pairing code', msg.messageId));
       return;
     }
+
+    const existingSession = this.sessionStore.sessionsByCode.get(pairingCode);
+    console.log(`[JOIN] instanceId=${SERVER_INSTANCE_ID} codeHash=${codeFingerprint(pairingCode)} codeFound=${!!existingSession} activeSessions=${this.sessionStore.sessionsById.size}`);
 
     let session;
     try {
