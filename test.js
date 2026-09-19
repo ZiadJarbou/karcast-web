@@ -2,7 +2,7 @@
 
 const assert = require('assert/strict');
 const http = require('http');
-const UnifiedAppServer = require('./server.js');
+const UnifiedAppServer = require('./server-core.js');
 const WsSocket = require('./tools/signal-server/ws_frame.cjs');
 const { PROTOCOL_VERSION, MSG_TYPES } = require('./tools/signal-server/protocol.cjs');
 
