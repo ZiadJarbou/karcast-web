@@ -1,0 +1,22 @@
+{
+  "name": "app-karcast-app",
+  "version": "1.0.0",
+  "description": "Unified KarCast Vehicle Browser Application & Public Signaling Relay",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "keywords": [
+    "karcast",
+    "android-auto",
+    "webrtc",
+    "tesla",
+    "signaling"
+  ],
+  "author": "KarCast Team",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

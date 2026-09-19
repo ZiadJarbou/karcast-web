@@ -1,0 +1,281 @@
+/* KarCast Vehicle Browser Client Theme */
+:root {
+  --bg-color: #081016;
+  --surface-color: #101c24;
+  --surface-border: #1e2f3a;
+  --primary-color: #9de3d2;
+  --primary-text: #06231c;
+  --text-primary: #edf7f6;
+  --text-secondary: #94a3b8;
+  --amber-warning: #f59e0b;
+  --red-error: #ef4444;
+  --green-active: #10b981;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html, body {
+  width: 100vw;
+  height: 100vh;
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  overflow: hidden;
+}
+
+#app {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Video Canvas & Container */
+#stream-container {
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+#remoteVideo {
+  width: 100vw;
+  height: 100vh;
+  object-fit: contain;
+  touch-action: none;
+  background: #000;
+}
+
+/* Connection Pill (Overlay when connected) */
+#connection-pill {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(16, 28, 36, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--surface-border);
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  pointer-events: auto;
+  transition: opacity 0.3s ease;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--amber-warning);
+}
+
+.status-dot.connected {
+  background: var(--green-active);
+  box-shadow: 0 0 8px var(--green-active);
+}
+
+.status-dot.connecting {
+  background: var(--primary-color);
+  animation: pulse 1.5s infinite;
+}
+
+.status-dot.error {
+  background: var(--red-error);
+}
+
+@keyframes pulse {
+  0% { opacity: 0.4; }
+  50% { opacity: 1; }
+  100% { opacity: 0.4; }
+}
+
+/* Pairing & Setup UI Overlay */
+#pairing-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 16, 22, 0.95);
+  backdrop-filter: blur(20px);
+  padding: 24px;
+  text-align: center;
+}
+
+.card {
+  width: 100%;
+  max-width: 520px;
+  background: var(--surface-color);
+  border: 1px solid var(--surface-border);
+  border-radius: 28px;
+  padding: 36px 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-icon {
+  width: 44px;
+  height: 44px;
+  background: rgba(157, 227, 210, 0.12);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary-color);
+}
+
+.brand-title {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  color: var(--text-primary);
+}
+
+.eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--primary-color);
+}
+
+.subtitle {
+  font-size: 15px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Code Entry Form */
+#code-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.code-inputs {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.code-digit {
+  width: 56px;
+  height: 68px;
+  border-radius: 16px;
+  background: #081016;
+  border: 2px solid var(--surface-border);
+  color: var(--text-primary);
+  font-family: monospace;
+  font-size: 32px;
+  font-weight: 700;
+  text-align: center;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.code-digit:focus {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 4px rgba(157, 227, 210, 0.15);
+}
+
+.primary-button {
+  width: 100%;
+  height: 56px;
+  border-radius: 16px;
+  background: var(--primary-color);
+  color: var(--primary-text);
+  font-size: 17px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: opacity 0.2s ease, transform 0.1s ease;
+}
+
+.primary-button:active {
+  transform: scale(0.98);
+}
+
+.primary-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.secondary-button {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--surface-border);
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Message & Failure Banner */
+.message-box {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--amber-warning);
+}
+
+.message-box.error {
+  color: var(--red-error);
+}
+
+/* Diagnostics Panel (?metrics=1) */
+#metrics-panel {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 40vh;
+  background: rgba(8, 16, 22, 0.95);
+  border-top: 1px solid var(--surface-border);
+  color: #edf7f6;
+  padding: 12px 16px;
+  font-family: monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  z-index: 200;
+}
+
+[hidden] {
+  display: none !important;
+}
