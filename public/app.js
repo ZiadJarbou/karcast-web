@@ -43,8 +43,21 @@
 
   // Diagnostics & Metrics
   const diagnostics = {
-    diagnosticsBuildId: 'phase3d-unified-client',
+    diagnosticsBuildId: 'phase3d4-signaling-trace',
     connectionPath: 'unknown',
+    peerReadyReceived: false,
+    offerCreated: false,
+    localDescriptionSet: false,
+    offerSent: false,
+    offerSentAt: null,
+    answerReceived: false,
+    remoteDescriptionSet: false,
+    answerAppliedAt: null,
+    browserIceCandidatesSent: 0,
+    phoneIceCandidatesForwardedToBrowser: 0,
+    iceGatheringState: 'new',
+    iceConnectionState: 'new',
+    peerConnectionState: 'new',
     localCandidateType: 'none',
     remoteCandidateType: 'none',
     localCandidateAddress: 'none',
@@ -52,12 +65,10 @@
     protocol: 'udp',
     candidatePairRttMs: null,
     signalingState: 'closed',
-    peerConnectionState: 'closed',
     dataChannelState: 'closed',
-    presentedFrames: 0,
-    rttMs: null,
-    packetsLost: 0,
-    fps: 0
+    lastCloseCode: null,
+    lastCloseReason: '',
+    presentedFrames: 0
   };
 
   // 1. Code Input Management
@@ -199,16 +210,18 @@
 
     ws.onerror = () => {
       diagnostics.signalingState = 'error';
-      if (state !== 'CONNECTED') {
+      if (state !== 'CONNECTED' && (!pc || pc.connectionState !== 'connected')) {
         setUIState('CONNECTION_FAILED', 'Unable to connect to KarCast signaling relay.', true);
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       diagnostics.signalingState = 'closed';
+      diagnostics.lastCloseCode = e.code;
+      diagnostics.lastCloseReason = e.reason;
       clearInterval(heartbeatTimer);
 
-      if (state === 'CONNECTED' && pc && pc.connectionState === 'connected') {
+      if (state === 'CONNECTED' || (pc && pc.connectionState === 'connected')) {
         setTimeout(reconnectSignalingBackground, 5000);
       } else if (state !== 'READY' && state !== 'INVALID_CODE' && state !== 'CODE_EXPIRED') {
         setUIState('CONNECTION_FAILED', 'Signaling connection closed.', true);
@@ -220,8 +233,8 @@
     if (ws && ws.readyState === WebSocket.OPEN) return;
     try {
       ws = new WebSocket(SIGNAL_URL);
-      ws.onopen = () => { diagnostics.signalingState = 'open'; };
-      ws.onclose = () => { diagnostics.signalingState = 'closed'; };
+      ws.onopen = () => { diagnostics.signalingState = 'open'; renderDiagnostics(); };
+      ws.onclose = (e) => { diagnostics.signalingState = 'closed'; diagnostics.lastCloseCode = e.code; renderDiagnostics(); };
     } catch (_) {}
   }
 
@@ -233,20 +246,30 @@
         break;
 
       case 'peer_ready':
+        diagnostics.peerReadyReceived = true;
+        renderDiagnostics();
         if (msg.role === 'phone' || msg.role === 'browser') {
           initiateWebRTCOffer();
         }
         break;
 
       case 'answer':
+        diagnostics.answerReceived = true;
+        renderDiagnostics();
         if (pc && msg.sdp) {
-          pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(() => {
+          pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).then(() => {
+            diagnostics.remoteDescriptionSet = true;
+            diagnostics.answerAppliedAt = Date.now();
+            renderDiagnostics();
+          }).catch(() => {
             setUIState('CONNECTION_FAILED', 'Failed to set remote SDP answer.', true);
           });
         }
         break;
 
       case 'candidate':
+        diagnostics.phoneIceCandidatesForwardedToBrowser++;
+        renderDiagnostics();
         if (pc && msg.candidate) {
           pc.addIceCandidate(msg.candidate).catch(() => {});
         }
@@ -297,6 +320,8 @@
         bundlePolicy: 'max-bundle'
       });
       diagnostics.peerConnectionState = pc.connectionState;
+      diagnostics.iceConnectionState = pc.iceConnectionState;
+      diagnostics.iceGatheringState = pc.iceGatheringState;
     } catch (e) {
       setUIState('CONNECTION_FAILED', 'WebRTC is unavailable in this browser.', true);
       return;
@@ -316,16 +341,30 @@
     };
 
     pc.onicecandidate = (e) => {
-      if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          version: PROTOCOL_VERSION,
-          type: 'candidate',
-          sessionId: sessionId,
-          messageId: 'cand_' + Date.now(),
-          timestamp: Date.now(),
-          candidate: e.candidate.toJSON()
-        }));
+      if (e.candidate) {
+        diagnostics.browserIceCandidatesSent++;
+        renderDiagnostics();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            version: PROTOCOL_VERSION,
+            type: 'candidate',
+            sessionId: sessionId,
+            messageId: 'cand_' + Date.now(),
+            timestamp: Date.now(),
+            candidate: e.candidate.toJSON()
+          }));
+        }
       }
+    };
+
+    pc.onicegatheringstatechange = () => {
+      diagnostics.iceGatheringState = pc.iceGatheringState;
+      renderDiagnostics();
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      diagnostics.iceConnectionState = pc.iceConnectionState;
+      renderDiagnostics();
     };
 
     pc.onconnectionstatechange = () => {
@@ -340,7 +379,9 @@
     };
 
     pc.createOffer().then(offer => {
+      diagnostics.offerCreated = true;
       return pc.setLocalDescription(offer).then(() => {
+        diagnostics.localDescriptionSet = true;
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             version: PROTOCOL_VERSION,
@@ -350,7 +391,10 @@
             timestamp: Date.now(),
             sdp: offer.sdp
           }));
+          diagnostics.offerSent = true;
+          diagnostics.offerSentAt = Date.now();
         }
+        renderDiagnostics();
       });
     }).catch(() => {
       setUIState('CONNECTION_FAILED', 'Failed to create WebRTC offer.', true);
