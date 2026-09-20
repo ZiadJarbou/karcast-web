@@ -243,6 +243,7 @@ class UnifiedAppServer {
 
     try { session.phoneSocket.send(peerReadyPhone); } catch (_) {}
     try { session.browserSocket.send(peerReadyBrowser); } catch (_) {}
+    console.log(`[PEER_READY] instanceId=${SERVER_INSTANCE_ID} sess=${session.sessionId.slice(-6)} phoneActive=${!!session.phoneSocket} browserActive=${!!session.browserSocket}`);
   }
 
   handleOffer(ws, msg) {
@@ -262,10 +263,12 @@ class UnifiedAppServer {
       return;
     }
 
+    console.log(`[OFFER_RECEIVED_FROM_BROWSER] instanceId=${SERVER_INSTANCE_ID} sess=${msg.sessionId.slice(-6)} sdpLen=${msg.sdp.length}`);
     session.phoneSocket.send(createMessage(MSG_TYPES.OFFER, {
       sessionId: session.sessionId,
       sdp: msg.sdp
     }));
+    console.log(`[OFFER_FORWARDED_TO_PHONE] instanceId=${SERVER_INSTANCE_ID} sess=${msg.sessionId.slice(-6)} phoneActive=${!!session.phoneSocket}`);
   }
 
   handleAnswer(ws, msg) {
@@ -285,10 +288,12 @@ class UnifiedAppServer {
       return;
     }
 
+    console.log(`[ANSWER_RECEIVED_FROM_PHONE] instanceId=${SERVER_INSTANCE_ID} sess=${msg.sessionId.slice(-6)} sdpLen=${msg.sdp.length}`);
     session.browserSocket.send(createMessage(MSG_TYPES.ANSWER, {
       sessionId: session.sessionId,
       sdp: msg.sdp
     }));
+    console.log(`[ANSWER_FORWARDED_TO_BROWSER] instanceId=${SERVER_INSTANCE_ID} sess=${msg.sessionId.slice(-6)} browserActive=${!!session.browserSocket}`);
   }
 
   handleCandidate(ws, msg) {
@@ -308,6 +313,10 @@ class UnifiedAppServer {
       ws.send(createErrorMessage(ERROR_CODES.INVALID_MESSAGE_FORMAT, 'Missing ICE candidate', msg.messageId));
       return;
     }
+
+    const fromRole = (session.browserSocket === ws) ? 'browser' : 'phone';
+    const toRole = (session.phoneSocket === recipient) ? 'phone' : 'browser';
+    console.log(`[ICE_FORWARDED] instanceId=${SERVER_INSTANCE_ID} sess=${msg.sessionId.slice(-6)} from=${fromRole} to=${toRole}`);
 
     recipient.send(createMessage(MSG_TYPES.CANDIDATE, {
       sessionId: session.sessionId,
