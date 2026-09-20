@@ -113,7 +113,7 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
     });
     assert.equal(res.status, 200);
     assert.ok(res.headers['content-type'].includes('application/javascript'));
-    assert.ok(res.body.includes('phase3d4-signaling-trace') || res.body.includes('phase3d'));
+    assert.ok(res.body.includes('phase3d-unified-client'));
     console.log('PASS 3: GET /app.js serves public/app.js');
   }
 
