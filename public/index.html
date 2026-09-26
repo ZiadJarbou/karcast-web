@@ -3,8 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>KarCast</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2.0">
 </head>
 <body>
   <div id="app">
@@ -19,55 +22,105 @@
       <span id="status-text">Connected</span>
     </div>
 
-    <!-- Vehicle Pairing Overlay -->
+    <!-- Vehicle Pairing & Progress Overlay -->
     <div id="pairing-overlay">
       <div class="card">
+        <!-- Header -->
         <div class="brand">
           <div class="brand-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="3" width="20" height="14" rx="3"></rect>
               <line x1="8" y1="21" x2="16" y2="21"></line>
               <line x1="12" y1="17" x2="12" y2="21"></line>
             </svg>
           </div>
-          <div>
-            <div class="eyebrow">KarCast</div>
-            <div class="brand-title">Connect Vehicle</div>
+          <div class="brand-text">
+            <div class="eyebrow">KARCAST</div>
+            <h1 id="card-heading" class="brand-title">Connect your vehicle</h1>
+            <p id="card-subtitle" class="subtitle">Follow these steps on your phone.</p>
           </div>
         </div>
 
-        <!-- Visual Phone Setup Steps -->
-        <div id="visual-guide-container" class="guide-steps">
-          <div class="guide-step">
-            <div class="step-num">1</div>
-            <div class="step-content">
-              <div class="step-title">Open KarCast App</div>
-              <div class="step-desc">Open the KarCast app on your phone.</div>
+        <!-- 1. Initial Waiting Steps (Before Phone Connects) -->
+        <div id="waiting-steps" class="timeline">
+          <div class="timeline-row">
+            <div class="timeline-left">
+              <div class="timeline-line"></div>
+              <div class="timeline-circle pending">1</div>
+            </div>
+            <div class="timeline-content">
+              <div class="step-title">Open KarCast</div>
+              <div class="step-desc">Launch the app on your phone.</div>
             </div>
           </div>
 
-          <div class="guide-step">
-            <div class="step-num">2</div>
-            <div class="step-content">
-              <div class="step-title">Tap "Start Connection"</div>
-              <div class="step-desc">Tap the green Start connection button on your phone.</div>
+          <div class="timeline-row">
+            <div class="timeline-left">
+              <div class="timeline-circle pending">2</div>
+            </div>
+            <div class="timeline-content">
+              <div class="step-title">Tap Start Connection</div>
+              <div class="step-desc">Keep KarCast running while you connect.</div>
             </div>
           </div>
         </div>
 
-        <div id="message-box" class="message-box">Connecting to phone...</div>
+        <!-- 2. Connection Progress Timeline (When Phone Connects / Connecting Android Auto) -->
+        <div id="progress-timeline" class="timeline" hidden>
+          <!-- Step 1: Phone connected -->
+          <div class="timeline-row">
+            <div class="timeline-left">
+              <div class="timeline-line"></div>
+              <div id="circle-step-1" class="timeline-circle completed">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              </div>
+            </div>
+            <div class="timeline-content row-between">
+              <span class="step-title">Phone connected</span>
+              <span id="badge-step-1" class="status-done">Done</span>
+            </div>
+          </div>
 
-        <!-- Progress Loading Component -->
-        <div id="progress-container" hidden>
-          <div class="progress-header">
-            <div id="progress-title" class="progress-title">Connecting to Vehicle...</div>
-            <div id="progress-badge" class="progress-badge">25%</div>
+          <!-- Step 2: Starting Android Auto -->
+          <div class="timeline-row">
+            <div class="timeline-left">
+              <div class="timeline-line"></div>
+              <div id="circle-step-2" class="timeline-circle active">
+                <div class="spinner-ring"></div>
+              </div>
+            </div>
+            <div class="timeline-content row-between">
+              <span class="step-title">Starting Android Auto</span>
+              <span id="badge-step-2" class="status-badge-progress">In progress</span>
+            </div>
           </div>
-          <div class="progress-bar-track">
-            <div id="progress-bar-fill" class="progress-bar-fill" style="width: 25%;"></div>
+
+          <!-- Step 3: Ready to drive -->
+          <div class="timeline-row">
+            <div class="timeline-left">
+              <div id="circle-step-3" class="timeline-circle pending">3</div>
+            </div>
+            <div class="timeline-content row-between">
+              <span id="title-step-3" class="step-title muted">Ready to drive</span>
+              <span id="badge-step-3" class="status-muted">Up next</span>
+            </div>
           </div>
-          <p id="progress-subtitle" class="progress-subtitle">Establishing secure WebRTC connection...</p>
         </div>
+
+        <div class="divider"></div>
+
+        <!-- Bottom Inset Status Panel -->
+        <div class="status-panel">
+          <div class="status-panel-icon">
+            <div id="status-panel-spinner" class="spinner-ring-small"></div>
+          </div>
+          <div class="status-panel-text">
+            <div id="status-panel-title" class="status-panel-title">Waiting for your phone…</div>
+            <div id="status-panel-sub" class="status-panel-sub">This screen will connect automatically.</div>
+          </div>
+        </div>
+
+        <div id="message-box" class="message-box" hidden></div>
       </div>
     </div>
 
@@ -75,6 +128,6 @@
     <pre id="metrics-panel" hidden></pre>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2.0"></script>
 </body>
 </html>

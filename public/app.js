@@ -1,6 +1,6 @@
 /**
  * KarCast Vehicle Browser Client (https://app.karcast.app)
- * Version: 1.0
+ * Version: 2.0
  *
  * Public entry point for Tesla and vehicle browsers.
  * Bootstraps WebRTC signaling via wss://app.karcast.app/ws.
@@ -19,9 +19,6 @@
 
   // UI Elements
   const overlay = document.getElementById('pairing-overlay');
-  const codeInputs = Array.from(document.querySelectorAll('.code-digit'));
-  const connectBtn = document.getElementById('connect-btn');
-  const retryBtn = document.getElementById('retry-btn');
   const messageBox = document.getElementById('message-box');
   const statusText = document.getElementById('status-text');
   const statusDot = document.getElementById('status-dot');
@@ -29,9 +26,24 @@
   const remoteVideo = document.getElementById('remoteVideo');
   const metricsPanel = document.getElementById('metrics-panel');
 
+  const cardHeading = document.getElementById('card-heading');
+  const cardSubtitle = document.getElementById('card-subtitle');
+  const waitingSteps = document.getElementById('waiting-steps');
+  const progressTimeline = document.getElementById('progress-timeline');
+  const statusPanelTitle = document.getElementById('status-panel-title');
+  const statusPanelSub = document.getElementById('status-panel-sub');
+
+  const circleStep1 = document.getElementById('circle-step-1');
+  const badgeStep1 = document.getElementById('badge-step-1');
+  const circleStep2 = document.getElementById('circle-step-2');
+  const badgeStep2 = document.getElementById('badge-step-2');
+  const circleStep3 = document.getElementById('circle-step-3');
+  const titleStep3 = document.getElementById('title-step-3');
+  const badgeStep3 = document.getElementById('badge-step-3');
+
   // Application State
   let state = 'READY'; // READY, PAIRING, ESTABLISHING_SECURE_CONNECTION, CONNECTED, RECONNECTING, FAILED
-  let pairingCode = '';
+  let pairingCode = 'auto';
   let sessionId = null;
   let ws = null;
   let pc = null;
@@ -43,7 +55,7 @@
 
   // Diagnostics & Metrics
   const diagnostics = {
-    diagnosticsBuildId: 'phase3d-unified-client',
+    diagnosticsBuildId: 'phase3d-unified-client-v2.0',
     connectionPath: 'unknown',
     localCandidateType: 'none',
     remoteCandidateType: 'none',
@@ -60,101 +72,16 @@
     fps: 0
   };
 
-  // 1. Code Input Management
-  codeInputs.forEach((input, index) => {
-    input.addEventListener('input', (e) => {
-      const val = e.target.value.replace(/[^0-9]/g, '');
-      e.target.value = val ? val.slice(-1) : '';
-
-      if (val && index < codeInputs.length - 1) {
-        codeInputs[index + 1].focus();
-      }
-
-      updatePairingCodeFromInputs();
-    });
-
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Backspace' && !e.target.value && index > 0) {
-        codeInputs[index - 1].focus();
-      }
-    });
-
-    input.addEventListener('paste', (e) => {
-      e.preventDefault();
-      const pasteData = (e.clipboardData || window.clipboardData).getData('text').replace(/[^0-9]/g, '').slice(0, 6);
-      pasteData.split('').forEach((char, idx) => {
-        if (codeInputs[idx]) codeInputs[idx].value = char;
-      });
-      if (codeInputs[Math.min(pasteData.length, 5)]) {
-        codeInputs[Math.min(pasteData.length, 5)].focus();
-      }
-      updatePairingCodeFromInputs();
-    });
-  });
-
-  const progressContainer = document.getElementById('progress-container');
-  const progressTitle = document.getElementById('progress-title');
-  const progressBadge = document.getElementById('progress-badge');
-  const progressBarFill = document.getElementById('progress-bar-fill');
-  const progressSubtitle = document.getElementById('progress-subtitle');
-  const guideContainer = document.getElementById('visual-guide-container');
-
-  function updateProgress(percent, title, subtitle, isLive = false) {
-    if (!progressContainer) return;
-    progressContainer.hidden = false;
-    progressBadge.textContent = percent + '%';
-    progressBarFill.style.width = percent + '%';
-    if (isLive) {
-      progressBarFill.classList.add('live');
-    } else {
-      progressBarFill.classList.remove('live');
-    }
-    progressTitle.textContent = title;
-    progressSubtitle.textContent = subtitle;
-  }
-
   function setUIState(newState, userMessage = '', isError = false) {
     state = newState;
-    messageBox.textContent = userMessage;
-    messageBox.classList.toggle('error', isError);
+    if (messageBox) {
+      messageBox.textContent = userMessage;
+      messageBox.hidden = !userMessage;
+      messageBox.classList.toggle('error', isError);
+    }
 
     switch (newState) {
       case 'READY':
-        statusText.textContent = 'Waiting for phone...';
-        statusDot.className = 'status-dot connecting';
-        overlay.hidden = false;
-        connectionPill.hidden = true;
-        if (guideContainer) guideContainer.hidden = false;
-        if (progressContainer) progressContainer.hidden = true;
-        break;
-
-      case 'PAIRING':
-        statusText.textContent = '1. Pairing with Phone...';
-        statusDot.className = 'status-dot connecting';
-        if (guideContainer) guideContainer.hidden = true;
-        updateProgress(25, '1. Pairing with Phone', 'Connecting to KarCast signaling relay...');
-        break;
-
-      case 'ESTABLISHING_SECURE_CONNECTION':
-        statusText.textContent = '2. Initializing Stream...';
-        statusDot.className = 'status-dot connecting';
-        if (guideContainer) guideContainer.hidden = true;
-        updateProgress(50, '2. Initializing Stream & Security', 'Exchanging WebRTC encryption keys...');
-        break;
-
-      case 'CONNECTED':
-        statusText.textContent = diagnostics.connectionPath === 'local-direct' ? 'Connected • Local Hotspot' : 'Connected';
-        statusDot.className = 'status-dot connected';
-        if (guideContainer) guideContainer.hidden = true;
-        updateProgress(100, '4. Connected & Streaming Live!', 'Android Auto is streaming live to your browser.', true);
-        connectionPill.hidden = false;
-        setTimeout(() => {
-          if (state === 'CONNECTED') {
-            overlay.hidden = true;
-          }
-        }, 1200);
-        break;
-
       case 'RECONNECTING':
       case 'INVALID_CODE':
       case 'CODE_EXPIRED':
@@ -164,8 +91,109 @@
         statusDot.className = 'status-dot connecting';
         overlay.hidden = false;
         connectionPill.hidden = true;
-        if (guideContainer) guideContainer.hidden = false;
-        if (progressContainer) progressContainer.hidden = true;
+
+        if (cardHeading) cardHeading.textContent = 'Connect your vehicle';
+        if (cardSubtitle) cardSubtitle.textContent = 'Follow these steps on your phone.';
+
+        if (waitingSteps) waitingSteps.hidden = false;
+        if (progressTimeline) progressTimeline.hidden = true;
+
+        if (statusPanelTitle) statusPanelTitle.textContent = 'Waiting for your phone…';
+        if (statusPanelSub) statusPanelSub.textContent = 'This screen will connect automatically.';
+        break;
+
+      case 'PAIRING':
+      case 'ESTABLISHING_SECURE_CONNECTION':
+        statusText.textContent = 'Connecting...';
+        statusDot.className = 'status-dot connecting';
+        overlay.hidden = false;
+        connectionPill.hidden = true;
+
+        if (cardHeading) cardHeading.textContent = 'Connecting your vehicle';
+        if (cardSubtitle) cardSubtitle.textContent = 'Preparing Android Auto for your screen.';
+
+        if (waitingSteps) waitingSteps.hidden = true;
+        if (progressTimeline) progressTimeline.hidden = false;
+
+        // Stage 1: Phone connected (Done)
+        if (circleStep1) {
+          circleStep1.className = 'timeline-circle completed';
+          circleStep1.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+        }
+        if (badgeStep1) {
+          badgeStep1.className = 'status-done';
+          badgeStep1.textContent = 'Done';
+        }
+
+        // Stage 2: Starting Android Auto (In progress)
+        if (circleStep2) {
+          circleStep2.className = 'timeline-circle active';
+          circleStep2.innerHTML = '<div class="spinner-ring"></div>';
+        }
+        if (badgeStep2) {
+          badgeStep2.className = 'status-badge-progress';
+          badgeStep2.textContent = 'In progress';
+        }
+
+        // Stage 3: Ready to drive (Up next)
+        if (circleStep3) {
+          circleStep3.className = 'timeline-circle pending';
+          circleStep3.textContent = '3';
+        }
+        if (titleStep3) titleStep3.className = 'step-title muted';
+        if (badgeStep3) {
+          badgeStep3.className = 'status-muted';
+          badgeStep3.textContent = 'Up next';
+        }
+
+        if (statusPanelTitle) statusPanelTitle.textContent = 'Setting things up…';
+        if (statusPanelSub) statusPanelSub.textContent = 'Android Auto will appear here automatically.';
+        break;
+
+      case 'CONNECTED':
+        statusText.textContent = diagnostics.connectionPath === 'local-direct' ? 'Connected • Local Hotspot' : 'Connected';
+        statusDot.className = 'status-dot connected';
+        overlay.hidden = false;
+        connectionPill.hidden = false;
+
+        if (cardHeading) cardHeading.textContent = 'Vehicle Connected';
+        if (cardSubtitle) cardSubtitle.textContent = 'Android Auto is active.';
+
+        if (waitingSteps) waitingSteps.hidden = true;
+        if (progressTimeline) progressTimeline.hidden = false;
+
+        // Stage 1, 2 & 3 All Done
+        if (circleStep1) {
+          circleStep1.className = 'timeline-circle completed';
+          circleStep1.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+        }
+        if (circleStep2) {
+          circleStep2.className = 'timeline-circle completed';
+          circleStep2.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+        }
+        if (badgeStep2) {
+          badgeStep2.className = 'status-done';
+          badgeStep2.textContent = 'Done';
+        }
+
+        if (circleStep3) {
+          circleStep3.className = 'timeline-circle completed';
+          circleStep3.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+        }
+        if (titleStep3) titleStep3.className = 'step-title';
+        if (badgeStep3) {
+          badgeStep3.className = 'status-done';
+          badgeStep3.textContent = 'Done';
+        }
+
+        if (statusPanelTitle) statusPanelTitle.textContent = 'Connected & Streaming Live!';
+        if (statusPanelSub) statusPanelSub.textContent = 'Android Auto is streaming to your browser.';
+
+        setTimeout(() => {
+          if (state === 'CONNECTED') {
+            overlay.hidden = true;
+          }
+        }, 1200);
         break;
     }
     renderDiagnostics();
@@ -175,14 +203,14 @@
   function connectAndJoin() {
     if (!pairingCode) pairingCode = 'auto';
 
-    setUIState('PAIRING', 'Connecting to KarCast signaling relay...');
+    setUIState('PAIRING');
     cleanupWebRTC();
 
     try {
       ws = new WebSocket(SIGNAL_URL);
       diagnostics.signalingState = 'connecting';
     } catch (err) {
-      setUIState('CONNECTION_FAILED', 'Unable to reach signaling relay. Check network.', true);
+      setUIState('CONNECTION_FAILED');
       return;
     }
 
@@ -221,7 +249,7 @@
     ws.onerror = () => {
       diagnostics.signalingState = 'error';
       if (state !== 'CONNECTED') {
-        setUIState('PHONE_NOT_AVAILABLE', 'Waiting for phone... Tap "Start connection" in KarCast app on your phone.');
+        setUIState('PHONE_NOT_AVAILABLE');
         setTimeout(connectAndJoin, 3000);
       }
     };
@@ -251,7 +279,7 @@
     switch (msg.type) {
       case 'joined':
         sessionId = msg.sessionId;
-        setUIState('ESTABLISHING_SECURE_CONNECTION', 'Code accepted. Waiting for phone...');
+        setUIState('ESTABLISHING_SECURE_CONNECTION');
         break;
 
       case 'peer_ready':
@@ -263,7 +291,7 @@
       case 'answer':
         if (pc && msg.sdp) {
           pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(() => {
-            setUIState('CONNECTION_FAILED', 'Failed to set remote SDP answer.', true);
+            setUIState('CONNECTION_FAILED');
           });
         }
         break;
@@ -275,12 +303,12 @@
         break;
 
       case 'expired':
-        setUIState('CODE_EXPIRED', 'This pairing code has expired. Generate a new code on your phone.', true);
+        setUIState('CODE_EXPIRED');
         cleanupWebRTC();
         break;
 
       case 'closed':
-        setUIState('PHONE_NOT_AVAILABLE', 'Phone disconnected from session.', true);
+        setUIState('PHONE_NOT_AVAILABLE');
         cleanupWebRTC();
         break;
 
@@ -293,16 +321,16 @@
   function handleSignalingError(msg) {
     switch (msg.code) {
       case 'PAIRING_CODE_INVALID':
-        setUIState('INVALID_CODE', 'Invalid pairing code. Check the code on your phone and try again.', true);
+        setUIState('INVALID_CODE');
         break;
       case 'PAIRING_CODE_EXPIRED':
-        setUIState('CODE_EXPIRED', 'This code has expired. Generate a new code in KarCast.', true);
+        setUIState('CODE_EXPIRED');
         break;
       case 'SESSION_NOT_FOUND':
-        setUIState('PHONE_NOT_AVAILABLE', 'Phone not available. Make sure KarCast is running on your phone.', true);
+        setUIState('PHONE_NOT_AVAILABLE');
         break;
       default:
-        setUIState('CONNECTION_FAILED', msg.message || 'Unable to connect to your phone. Make sure vehicle is connected to phone hotspot.', true);
+        setUIState('CONNECTION_FAILED');
     }
     cleanupWebRTC();
   }
@@ -311,7 +339,7 @@
   function initiateWebRTCOffer() {
     if (pc) return;
 
-    setUIState('ESTABLISHING_SECURE_CONNECTION', 'Establishing direct local connection...');
+    setUIState('ESTABLISHING_SECURE_CONNECTION');
 
     try {
       pc = new RTCPeerConnection({
@@ -320,7 +348,7 @@
       });
       diagnostics.peerConnectionState = pc.connectionState;
     } catch (e) {
-      setUIState('CONNECTION_FAILED', 'WebRTC is unavailable in this browser.', true);
+      setUIState('CONNECTION_FAILED');
       return;
     }
 
@@ -356,7 +384,7 @@
         setUIState('CONNECTED');
         inspectSelectedIceCandidatePair();
       } else if (['failed', 'disconnected'].includes(pc.connectionState)) {
-        setUIState('CONNECTION_FAILED', 'Unable to connect to your phone. Make sure this vehicle is connected to the phone hotspot.', true);
+        setUIState('CONNECTION_FAILED');
       }
       renderDiagnostics();
     };
@@ -375,7 +403,7 @@
         }
       });
     }).catch(() => {
-      setUIState('CONNECTION_FAILED', 'Failed to create WebRTC offer.', true);
+      setUIState('CONNECTION_FAILED');
     });
   }
 
@@ -501,16 +529,7 @@
     diagnostics.dataChannelState = 'closed';
   }
 
-  // Event Listeners
-  connectBtn.addEventListener('click', connectAndJoin);
-  retryBtn.addEventListener('click', () => {
-    codeInputs.forEach(i => i.value = '');
-    updatePairingCodeFromInputs();
-    setUIState('READY');
-    codeInputs[0].focus();
-  });
-
-  // Auto-Connect Immediately on Load (Zero Pairing Code Entry Required)
+  // Auto-Connect Immediately on Load
   setTimeout(() => {
     if (state === 'READY') {
       pairingCode = 'auto';
@@ -522,10 +541,6 @@
 
   // Expose test helper hooks
   window.__KARCAST_TEST_HOOKS__ = {
-    setPairingCode: (code) => {
-      code.split('').forEach((c, idx) => { if (codeInputs[idx]) codeInputs[idx].value = c; });
-      updatePairingCodeFromInputs();
-    },
     connectAndJoin,
     getUIState: () => state,
     getDiagnostics: () => diagnostics,
