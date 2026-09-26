@@ -362,7 +362,12 @@
       if (e.track) {
         remoteVideo.srcObject = new MediaStream([e.track]);
         remoteVideo.play().catch(() => {});
+        setUIState('CONNECTED');
       }
+    };
+
+    remoteVideo.onplaying = () => {
+      setUIState('CONNECTED');
     };
 
     pc.onicecandidate = (e) => {
@@ -375,6 +380,15 @@
           timestamp: Date.now(),
           candidate: e.candidate.toJSON()
         }));
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        setUIState('CONNECTED');
+        inspectSelectedIceCandidatePair();
+      } else if (pc.iceConnectionState === 'failed') {
+        setUIState('CONNECTION_FAILED');
       }
     };
 
