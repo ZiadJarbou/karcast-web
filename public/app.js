@@ -92,6 +92,26 @@
     });
   });
 
+  const progressContainer = document.getElementById('progress-container');
+  const progressTitle = document.getElementById('progress-title');
+  const progressBadge = document.getElementById('progress-badge');
+  const progressBarFill = document.getElementById('progress-bar-fill');
+  const progressSubtitle = document.getElementById('progress-subtitle');
+
+  function updateProgress(percent, title, subtitle, isLive = false) {
+    if (!progressContainer) return;
+    progressContainer.hidden = false;
+    progressBadge.textContent = percent + '%';
+    progressBarFill.style.width = percent + '%';
+    if (isLive) {
+      progressBarFill.classList.add('live');
+    } else {
+      progressBarFill.classList.remove('live');
+    }
+    progressTitle.textContent = title;
+    progressSubtitle.textContent = subtitle;
+  }
+
   function updatePairingCodeFromInputs() {
     pairingCode = codeInputs.map(i => i.value).join('');
     connectBtn.disabled = pairingCode.length !== 6;
@@ -108,16 +128,25 @@
         statusDot.className = 'status-dot';
         overlay.hidden = false;
         connectionPill.hidden = true;
+        if (progressContainer) progressContainer.hidden = true;
         connectBtn.disabled = pairingCode.length !== 6;
         connectBtn.hidden = false;
         retryBtn.hidden = true;
         break;
 
-      case 'CONNECTING_SIGNAL':
       case 'PAIRING':
-      case 'ESTABLISHING_SECURE_CONNECTION':
-        statusText.textContent = 'Connecting...';
+        statusText.textContent = '1. Pairing with Phone...';
         statusDot.className = 'status-dot connecting';
+        updateProgress(25, '1. Pairing with Phone', 'Connecting to KarCast signaling relay...');
+        connectBtn.disabled = true;
+        connectBtn.hidden = false;
+        retryBtn.hidden = true;
+        break;
+
+      case 'ESTABLISHING_SECURE_CONNECTION':
+        statusText.textContent = '2. Initializing Stream...';
+        statusDot.className = 'status-dot connecting';
+        updateProgress(50, '2. Initializing Stream & Security', 'Exchanging WebRTC encryption keys...');
         connectBtn.disabled = true;
         connectBtn.hidden = false;
         retryBtn.hidden = true;
@@ -126,8 +155,13 @@
       case 'CONNECTED':
         statusText.textContent = diagnostics.connectionPath === 'local-direct' ? 'Connected • Local Hotspot' : 'Connected';
         statusDot.className = 'status-dot connected';
-        overlay.hidden = true;
+        updateProgress(100, '4. Connected & Streaming Live!', 'Android Auto is streaming live to your browser.', true);
         connectionPill.hidden = false;
+        setTimeout(() => {
+          if (state === 'CONNECTED') {
+            overlay.hidden = true;
+          }
+        }, 1200);
         break;
 
       case 'RECONNECTING':
@@ -152,7 +186,7 @@
 
   // 2. Public Signaling Client
   function connectAndJoin() {
-    if (pairingCode.length !== 6) return;
+    if (!pairingCode) pairingCode = 'auto';
 
     setUIState('PAIRING', 'Connecting to KarCast signaling relay...');
     cleanupWebRTC();
@@ -488,8 +522,14 @@
     codeInputs[0].focus();
   });
 
-  // Auto-Focus First Input
-  codeInputs[0].focus();
+  // Auto-Connect Immediately on Load (Zero Pairing Code Entry Required)
+  setTimeout(() => {
+    if (state === 'READY') {
+      pairingCode = 'auto';
+      connectAndJoin();
+    }
+  }, 300);
+
   renderDiagnostics();
 
   // Expose test helper hooks

@@ -258,6 +258,67 @@ html, body {
   color: var(--red-error);
 }
 
+/* Progress Loading Component */
+#progress-container {
+  width: 100%;
+  padding: 16px;
+  background: rgba(8, 16, 22, 0.6);
+  border: 1px solid var(--surface-border);
+  border-radius: 16px;
+  text-align: left;
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.progress-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.progress-badge {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary-color);
+  background: rgba(157, 227, 210, 0.15);
+  padding: 4px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(157, 227, 210, 0.3);
+}
+
+.progress-bar-track {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--primary-color);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.progress-bar-fill.live {
+  background: var(--green-active);
+  box-shadow: 0 0 10px var(--green-active);
+}
+
+.progress-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin: 0;
+}
+
 /* Diagnostics Panel (?metrics=1) */
 #metrics-panel {
   position: fixed;

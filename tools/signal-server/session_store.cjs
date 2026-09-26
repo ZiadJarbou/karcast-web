@@ -88,7 +88,15 @@ class SessionStore {
       throw { code: ERROR_CODES.RATE_LIMIT_EXCEEDED, message: 'Too many join attempts. Please wait a minute.' };
     }
 
-    const session = this.sessionsByCode.get(pairingCode);
+    let session = this.sessionsByCode.get(pairingCode);
+    if (!session) {
+      // Auto-join active registered phone session for seamless pairing
+      const activeSessions = Array.from(this.sessionsById.values()).filter(s => s.phoneSocket && !s.browserSocket && Date.now() < s.expiresAt);
+      if (activeSessions.length > 0) {
+        session = activeSessions[activeSessions.length - 1];
+      }
+    }
+
     if (!session) {
       throw { code: ERROR_CODES.PAIRING_CODE_INVALID, message: 'Invalid or unknown pairing code' };
     }
