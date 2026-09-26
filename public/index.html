@@ -36,31 +36,26 @@
           </div>
         </div>
 
-        <p class="subtitle">Enter the 6-digit code displayed in the KarCast app on your phone to connect.</p>
-
-        <!-- 6-Digit Code Input Form -->
-        <div id="code-form">
-          <div class="code-inputs">
-            <input type="text" class="code-digit" inputmode="numeric" maxlength="1" autocomplete="off" autofocus>
-            <input type="text" class="code-digit" inputmode="numeric" maxlength="1" autocomplete="off">
-            <input type="text" class="code-digit" inputmode="numeric" maxlength="1" autocomplete="off">
-            <input type="text" class="code-digit" inputmode="numeric" maxlength="1" autocomplete="off">
-            <input type="text" class="code-digit" inputmode="numeric" maxlength="1" autocomplete="off">
-            <input type="text" class="code-digit" inputmode="numeric" maxlength="1" autocomplete="off">
+        <!-- Visual Phone Setup Steps -->
+        <div id="visual-guide-container" class="guide-steps">
+          <div class="guide-step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <div class="step-title">Open KarCast App</div>
+              <div class="step-desc">Open the KarCast app on your phone.</div>
+            </div>
           </div>
 
-          <button id="connect-btn" class="primary-button" disabled>
-            <span>Connect</span>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="5" y1="12" x2="19" y2="12"></line>
-              <polyline points="12 5 19 12 12 19"></polyline>
-            </svg>
-          </button>
-
-          <button id="retry-btn" class="secondary-button" hidden>Try Again</button>
+          <div class="guide-step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <div class="step-title">Tap "Start Connection"</div>
+              <div class="step-desc">Tap the green Start connection button on your phone.</div>
+            </div>
+          </div>
         </div>
 
-        <div id="message-box" class="message-box"></div>
+        <div id="message-box" class="message-box">Connecting to phone...</div>
 
         <!-- Progress Loading Component -->
         <div id="progress-container" hidden>

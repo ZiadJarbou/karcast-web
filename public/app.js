@@ -97,6 +97,7 @@
   const progressBadge = document.getElementById('progress-badge');
   const progressBarFill = document.getElementById('progress-bar-fill');
   const progressSubtitle = document.getElementById('progress-subtitle');
+  const guideContainer = document.getElementById('visual-guide-container');
 
   function updateProgress(percent, title, subtitle, isLive = false) {
     if (!progressContainer) return;
@@ -112,11 +113,6 @@
     progressSubtitle.textContent = subtitle;
   }
 
-  function updatePairingCodeFromInputs() {
-    pairingCode = codeInputs.map(i => i.value).join('');
-    connectBtn.disabled = pairingCode.length !== 6;
-  }
-
   function setUIState(newState, userMessage = '', isError = false) {
     state = newState;
     messageBox.textContent = userMessage;
@@ -124,37 +120,32 @@
 
     switch (newState) {
       case 'READY':
-        statusText.textContent = 'Ready to connect';
-        statusDot.className = 'status-dot';
+        statusText.textContent = 'Waiting for phone...';
+        statusDot.className = 'status-dot connecting';
         overlay.hidden = false;
         connectionPill.hidden = true;
+        if (guideContainer) guideContainer.hidden = false;
         if (progressContainer) progressContainer.hidden = true;
-        connectBtn.disabled = pairingCode.length !== 6;
-        connectBtn.hidden = false;
-        retryBtn.hidden = true;
         break;
 
       case 'PAIRING':
         statusText.textContent = '1. Pairing with Phone...';
         statusDot.className = 'status-dot connecting';
+        if (guideContainer) guideContainer.hidden = true;
         updateProgress(25, '1. Pairing with Phone', 'Connecting to KarCast signaling relay...');
-        connectBtn.disabled = true;
-        connectBtn.hidden = false;
-        retryBtn.hidden = true;
         break;
 
       case 'ESTABLISHING_SECURE_CONNECTION':
         statusText.textContent = '2. Initializing Stream...';
         statusDot.className = 'status-dot connecting';
+        if (guideContainer) guideContainer.hidden = true;
         updateProgress(50, '2. Initializing Stream & Security', 'Exchanging WebRTC encryption keys...');
-        connectBtn.disabled = true;
-        connectBtn.hidden = false;
-        retryBtn.hidden = true;
         break;
 
       case 'CONNECTED':
         statusText.textContent = diagnostics.connectionPath === 'local-direct' ? 'Connected • Local Hotspot' : 'Connected';
         statusDot.className = 'status-dot connected';
+        if (guideContainer) guideContainer.hidden = true;
         updateProgress(100, '4. Connected & Streaming Live!', 'Android Auto is streaming live to your browser.', true);
         connectionPill.hidden = false;
         setTimeout(() => {
@@ -165,20 +156,16 @@
         break;
 
       case 'RECONNECTING':
-        statusText.textContent = 'Reconnecting...';
-        statusDot.className = 'status-dot connecting';
-        break;
-
       case 'INVALID_CODE':
       case 'CODE_EXPIRED':
       case 'PHONE_NOT_AVAILABLE':
       case 'CONNECTION_FAILED':
-        statusText.textContent = 'Connection failed';
-        statusDot.className = 'status-dot error';
+        statusText.textContent = 'Waiting for phone...';
+        statusDot.className = 'status-dot connecting';
         overlay.hidden = false;
         connectionPill.hidden = true;
-        connectBtn.hidden = true;
-        retryBtn.hidden = false;
+        if (guideContainer) guideContainer.hidden = false;
+        if (progressContainer) progressContainer.hidden = true;
         break;
     }
     renderDiagnostics();
@@ -234,7 +221,8 @@
     ws.onerror = () => {
       diagnostics.signalingState = 'error';
       if (state !== 'CONNECTED') {
-        setUIState('CONNECTION_FAILED', 'Unable to connect to KarCast signaling relay.', true);
+        setUIState('PHONE_NOT_AVAILABLE', 'Waiting for phone... Tap "Start connection" in KarCast app on your phone.');
+        setTimeout(connectAndJoin, 3000);
       }
     };
 
@@ -244,8 +232,8 @@
 
       if (state === 'CONNECTED' && pc && pc.connectionState === 'connected') {
         setTimeout(reconnectSignalingBackground, 5000);
-      } else if (state !== 'READY' && state !== 'INVALID_CODE' && state !== 'CODE_EXPIRED') {
-        setUIState('CONNECTION_FAILED', 'Signaling connection closed.', true);
+      } else {
+        setTimeout(connectAndJoin, 3000);
       }
     };
   }
