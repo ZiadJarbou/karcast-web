@@ -51,7 +51,9 @@
   let heartbeatTimer = null;
   let connectionWatchdogTimer = null;
   let reconnectTimer = null;
+  let disconnectGraceTimer = null;
   let connectAttempt = 0;
+  let mediaStarted = false;
   let seq = 0;
   let pressedPointer = null;
   let lastPoint = { x: 0, y: 0 };
@@ -302,6 +304,18 @@
     connectionWatchdogTimer = null;
   }
 
+  function markMediaConnected() {
+    if (!pc || remoteVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !remoteVideo.videoWidth) {
+      return;
+    }
+    mediaStarted = true;
+    connectAttempt = 0;
+    clearConnectionWatchdog();
+    clearTimeout(disconnectGraceTimer);
+    disconnectGraceTimer = null;
+    setUIState('CONNECTED');
+  }
+
   function reconnectSignalingBackground() {
     if (ws && ws.readyState === WebSocket.OPEN) return;
     try {
@@ -401,17 +415,16 @@
       if (e.track) {
         remoteVideo.srcObject = new MediaStream([e.track]);
         remoteVideo.play().catch(() => {});
-        connectAttempt = 0;
-        clearConnectionWatchdog();
-        setUIState('CONNECTED');
+        e.track.onended = () => {
+          if (!mediaStarted) return;
+          setUIState('CONNECTION_FAILED', 'The video stream stopped. Reconnecting...', true);
+          scheduleReconnect();
+        };
       }
     };
 
-    remoteVideo.onplaying = () => {
-      connectAttempt = 0;
-      clearConnectionWatchdog();
-      setUIState('CONNECTED');
-    };
+    remoteVideo.onloadeddata = markMediaConnected;
+    remoteVideo.onplaying = markMediaConnected;
 
     pc.onicecandidate = (e) => {
       if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
@@ -428,9 +441,6 @@
 
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-        connectAttempt = 0;
-        clearConnectionWatchdog();
-        setUIState('CONNECTED');
         inspectSelectedIceCandidatePair();
       } else if (pc.iceConnectionState === 'failed') {
         setUIState('CONNECTION_FAILED');
@@ -441,13 +451,20 @@
     pc.onconnectionstatechange = () => {
       diagnostics.peerConnectionState = pc.connectionState;
       if (pc.connectionState === 'connected') {
-        connectAttempt = 0;
-        clearConnectionWatchdog();
-        setUIState('CONNECTED');
+        clearTimeout(disconnectGraceTimer);
+        disconnectGraceTimer = null;
         inspectSelectedIceCandidatePair();
-      } else if (['failed', 'disconnected'].includes(pc.connectionState)) {
+      } else if (pc.connectionState === 'failed') {
         setUIState('CONNECTION_FAILED');
         scheduleReconnect();
+      } else if (pc.connectionState === 'disconnected') {
+        clearTimeout(disconnectGraceTimer);
+        disconnectGraceTimer = setTimeout(() => {
+          if (pc && pc.connectionState === 'disconnected') {
+            setUIState('CONNECTION_FAILED', 'The local video connection was interrupted. Reconnecting...', true);
+            scheduleReconnect();
+          }
+        }, 5000);
       }
       renderDiagnostics();
     };
@@ -586,6 +603,9 @@
   function cleanupWebRTC() {
     handleCancelTouch();
     clearConnectionWatchdog();
+    clearTimeout(disconnectGraceTimer);
+    disconnectGraceTimer = null;
+    mediaStarted = false;
     if (dc) { try { dc.close(); } catch (_) {} dc = null; }
     if (pc) { try { pc.close(); } catch (_) {} pc = null; }
     remoteVideo.srcObject = null;
