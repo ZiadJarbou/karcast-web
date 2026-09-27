@@ -167,7 +167,31 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
     console.log('PASS 5: WebSocket upgrade on /ws handles full signaling exchange');
   }
 
-  // Test 6: Concurrency Load Test (100 Simultaneous Sessions)
+  // Test 6: Browser disconnect keeps the phone session available for rejoin
+  {
+    const phone = await connectClient(port, '10.2.0.1');
+    phone.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.REGISTER }));
+    const reg = await waitMessage(phone, m => m.type === MSG_TYPES.REGISTERED);
+
+    const firstBrowser = await connectClient(port, '10.2.0.2');
+    firstBrowser.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.JOIN, pairingCode: reg.pairingCode }));
+    await waitMessage(firstBrowser, m => m.type === MSG_TYPES.JOINED);
+    firstBrowser.close();
+
+    const closed = await waitMessage(phone, m => m.type === MSG_TYPES.CLOSED);
+    assert.equal(closed.reason, 'Browser disconnected from signaling relay');
+
+    const secondBrowser = await connectClient(port, '10.2.0.3');
+    secondBrowser.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.JOIN, pairingCode: reg.pairingCode }));
+    const rejoined = await waitMessage(secondBrowser, m => m.type === MSG_TYPES.JOINED);
+    assert.equal(rejoined.sessionId, reg.sessionId);
+
+    secondBrowser.close();
+    phone.close();
+    console.log('PASS 6: Browser can rejoin without replacing the phone session');
+  }
+
+  // Test 7: Concurrency Load Test (100 Simultaneous Sessions)
   {
     console.log('\nStarting 100-Session Concurrency Load Test...');
     const COUNT = 100;
@@ -205,7 +229,7 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
     }
 
     const elapsed = Date.now() - start;
-    console.log(`PASS 6: 100 simultaneous transient sessions connected & cleaned up in ${elapsed} ms!`);
+    console.log(`PASS 7: 100 simultaneous transient sessions connected & cleaned up in ${elapsed} ms!`);
   }
 
   await server.stop();

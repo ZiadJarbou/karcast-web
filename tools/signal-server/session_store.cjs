@@ -171,6 +171,9 @@ class SessionStore {
     } else if (session.browserSocket === socket) {
       session.browserSocket = null;
       this.browserToSession.delete(socket);
+      session.pairedAt = null;
+      session.state = 'REGISTERED';
+      this.sessionsByCode.set(session.pairingCode, session);
       if (session.phoneSocket) {
         try {
           session.phoneSocket.send(createMessage(MSG_TYPES.CLOSED, {
