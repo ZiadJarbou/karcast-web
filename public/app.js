@@ -49,9 +49,14 @@
   let pc = null;
   let dc = null;
   let heartbeatTimer = null;
+  let connectionWatchdogTimer = null;
+  let reconnectTimer = null;
+  let connectAttempt = 0;
   let seq = 0;
   let pressedPointer = null;
   let lastPoint = { x: 0, y: 0 };
+  const CONNECTION_TIMEOUT_MS = 25000;
+  const MAX_CONNECT_ATTEMPTS = 3;
 
   // Diagnostics & Metrics
   const diagnostics = {
@@ -205,6 +210,8 @@
 
     setUIState('PAIRING');
     cleanupWebRTC();
+    clearTimeout(reconnectTimer);
+    clearConnectionWatchdog();
 
     try {
       ws = new WebSocket(SIGNAL_URL);
@@ -250,7 +257,7 @@
       diagnostics.signalingState = 'error';
       if (state !== 'CONNECTED') {
         setUIState('PHONE_NOT_AVAILABLE');
-        setTimeout(connectAndJoin, 3000);
+        scheduleReconnect();
       }
     };
 
@@ -261,9 +268,38 @@
       if (state === 'CONNECTED' && pc && pc.connectionState === 'connected') {
         setTimeout(reconnectSignalingBackground, 5000);
       } else {
-        setTimeout(connectAndJoin, 3000);
+        scheduleReconnect();
       }
     };
+  }
+
+  function scheduleReconnect() {
+    if (connectAttempt >= MAX_CONNECT_ATTEMPTS) {
+      setUIState(
+        'CONNECTION_FAILED',
+        'Connection timed out. On your phone, stop and start KarCast, then reload this page.',
+        true
+      );
+      return;
+    }
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectAndJoin, 2500);
+  }
+
+  function armConnectionWatchdog() {
+    clearConnectionWatchdog();
+    connectionWatchdogTimer = setTimeout(() => {
+      if (state === 'CONNECTED') return;
+      cleanupWebRTC();
+      try { ws?.close(); } catch (_) {}
+      ws = null;
+      scheduleReconnect();
+    }, CONNECTION_TIMEOUT_MS);
+  }
+
+  function clearConnectionWatchdog() {
+    clearTimeout(connectionWatchdogTimer);
+    connectionWatchdogTimer = null;
   }
 
   function reconnectSignalingBackground() {
@@ -279,6 +315,7 @@
     switch (msg.type) {
       case 'joined':
         sessionId = msg.sessionId;
+        connectAttempt++;
         setUIState('ESTABLISHING_SECURE_CONNECTION');
         break;
 
@@ -310,6 +347,7 @@
       case 'closed':
         setUIState('PHONE_NOT_AVAILABLE');
         cleanupWebRTC();
+        scheduleReconnect();
         break;
 
       case 'error':
@@ -340,6 +378,7 @@
     if (pc) return;
 
     setUIState('ESTABLISHING_SECURE_CONNECTION');
+    armConnectionWatchdog();
 
     try {
       pc = new RTCPeerConnection({
@@ -362,11 +401,15 @@
       if (e.track) {
         remoteVideo.srcObject = new MediaStream([e.track]);
         remoteVideo.play().catch(() => {});
+        connectAttempt = 0;
+        clearConnectionWatchdog();
         setUIState('CONNECTED');
       }
     };
 
     remoteVideo.onplaying = () => {
+      connectAttempt = 0;
+      clearConnectionWatchdog();
       setUIState('CONNECTED');
     };
 
@@ -385,20 +428,26 @@
 
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        connectAttempt = 0;
+        clearConnectionWatchdog();
         setUIState('CONNECTED');
         inspectSelectedIceCandidatePair();
       } else if (pc.iceConnectionState === 'failed') {
         setUIState('CONNECTION_FAILED');
+        scheduleReconnect();
       }
     };
 
     pc.onconnectionstatechange = () => {
       diagnostics.peerConnectionState = pc.connectionState;
       if (pc.connectionState === 'connected') {
+        connectAttempt = 0;
+        clearConnectionWatchdog();
         setUIState('CONNECTED');
         inspectSelectedIceCandidatePair();
       } else if (['failed', 'disconnected'].includes(pc.connectionState)) {
         setUIState('CONNECTION_FAILED');
+        scheduleReconnect();
       }
       renderDiagnostics();
     };
@@ -536,6 +585,7 @@
   // 7. Cleanup
   function cleanupWebRTC() {
     handleCancelTouch();
+    clearConnectionWatchdog();
     if (dc) { try { dc.close(); } catch (_) {} dc = null; }
     if (pc) { try { pc.close(); } catch (_) {} pc = null; }
     remoteVideo.srcObject = null;
