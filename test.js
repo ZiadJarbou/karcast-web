@@ -197,7 +197,33 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
     console.log('PASS 6: Browser signaling disconnect preserves media and allows rejoin');
   }
 
-  // Test 7: Concurrency Load Test (100 Simultaneous Sessions)
+  // Test 7: A vehicle auto-join takes over a phone session held by another browser
+  {
+    const phone = await connectClient(port, '10.3.0.1');
+    phone.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.REGISTER }));
+    const reg = await waitMessage(phone, m => m.type === MSG_TYPES.REGISTERED);
+
+    const desktop = await connectClient(port, '10.3.0.2');
+    desktop.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.JOIN, pairingCode: reg.pairingCode }));
+    await waitMessage(desktop, m => m.type === MSG_TYPES.JOINED);
+
+    const vehicle = await connectClient(port, '10.3.0.3');
+    vehicle.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.JOIN, pairingCode: 'auto' }));
+    const joined = await waitMessage(vehicle, m => m.type === MSG_TYPES.JOINED);
+    const replaced = await waitMessage(desktop, m => m.type === MSG_TYPES.CLOSED);
+
+    assert.equal(joined.sessionId, reg.sessionId);
+    assert.equal(replaced.reason, 'Another vehicle browser connected');
+    assert.ok(server.sessionStore.getSessionById(reg.sessionId).browserSocket);
+    assert.equal(server.sessionStore.browserToSession.size, 1);
+
+    vehicle.close();
+    desktop.close();
+    phone.close();
+    console.log('PASS 7: Vehicle auto-join takes over an existing desktop browser session');
+  }
+
+  // Test 8: Concurrency Load Test (100 Simultaneous Sessions)
   {
     console.log('\nStarting 100-Session Concurrency Load Test...');
     const COUNT = 100;
@@ -235,7 +261,7 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
     }
 
     const elapsed = Date.now() - start;
-    console.log(`PASS 7: 100 simultaneous transient sessions connected & cleaned up in ${elapsed} ms!`);
+    console.log(`PASS 8: 100 simultaneous transient sessions connected & cleaned up in ${elapsed} ms!`);
   }
 
   await server.stop();

@@ -88,10 +88,11 @@ class SessionStore {
       throw { code: ERROR_CODES.RATE_LIMIT_EXCEEDED, message: 'Too many join attempts. Please wait a minute.' };
     }
 
+    const isAutoJoin = pairingCode === 'auto';
     let session = this.sessionsByCode.get(pairingCode);
-    if (!session) {
+    if (!session && isAutoJoin) {
       // Auto-join active registered phone session for seamless pairing
-      const activeSessions = Array.from(this.sessionsById.values()).filter(s => s.phoneSocket && !s.browserSocket && Date.now() < s.expiresAt);
+      const activeSessions = Array.from(this.sessionsById.values()).filter(s => s.phoneSocket && Date.now() < s.expiresAt);
       if (activeSessions.length > 0) {
         session = activeSessions[activeSessions.length - 1];
       }
@@ -106,7 +107,23 @@ class SessionStore {
       throw { code: ERROR_CODES.PAIRING_CODE_EXPIRED, message: 'Pairing code has expired' };
     }
 
-    if (session.state !== 'REGISTERED' || session.browserSocket !== null) {
+    if (session.browserSocket !== null) {
+      if (!isAutoJoin) {
+        throw { code: ERROR_CODES.SESSION_ALREADY_PAIRED, message: 'This session code is already in use by another browser' };
+      }
+
+      const previousBrowser = session.browserSocket;
+      this.browserToSession.delete(previousBrowser);
+      try {
+        previousBrowser.send(createMessage(MSG_TYPES.CLOSED, {
+          sessionId: session.sessionId,
+          reason: 'Another vehicle browser connected'
+        }));
+      } catch (_) {}
+      session.browserSocket = null;
+      session.pairedAt = null;
+      session.state = 'REGISTERED';
+    } else if (session.state !== 'REGISTERED') {
       throw { code: ERROR_CODES.SESSION_ALREADY_PAIRED, message: 'This session code is already in use by another browser' };
     }
 

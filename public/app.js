@@ -147,8 +147,22 @@
         break;
 
       case 'PAIRING':
+        setProgressMilestone(5, 18);
+        statusText.textContent = 'Looking for phone...';
+        statusDot.className = 'status-dot connecting';
+        overlay.hidden = false;
+        connectionPill.hidden = true;
+
+        if (cardHeading) cardHeading.textContent = 'Connect your vehicle';
+        if (cardSubtitle) cardSubtitle.textContent = 'Follow these steps on your phone.';
+        if (waitingSteps) waitingSteps.hidden = false;
+        if (progressTimeline) progressTimeline.hidden = true;
+        if (statusPanelTitle) statusPanelTitle.textContent = 'Looking for your phone…';
+        if (statusPanelSub) statusPanelSub.textContent = 'Keep KarCast open after tapping Start Connection.';
+        break;
+
       case 'ESTABLISHING_SECURE_CONNECTION':
-        setProgressMilestone(newState === 'PAIRING' ? 5 : 30, newState === 'PAIRING' ? 18 : 42);
+        setProgressMilestone(30, 42);
         statusText.textContent = 'Connecting...';
         statusDot.className = 'status-dot connecting';
         overlay.hidden = false;
