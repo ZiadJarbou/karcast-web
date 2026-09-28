@@ -441,6 +441,10 @@
 
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        clearConnectionWatchdog();
+        clearTimeout(disconnectGraceTimer);
+        disconnectGraceTimer = null;
+        setUIState('CONNECTED');
         inspectSelectedIceCandidatePair();
       } else if (pc.iceConnectionState === 'failed') {
         setUIState('CONNECTION_FAILED');
@@ -451,8 +455,10 @@
     pc.onconnectionstatechange = () => {
       diagnostics.peerConnectionState = pc.connectionState;
       if (pc.connectionState === 'connected') {
+        clearConnectionWatchdog();
         clearTimeout(disconnectGraceTimer);
         disconnectGraceTimer = null;
+        setUIState('CONNECTED');
         inspectSelectedIceCandidatePair();
       } else if (pc.connectionState === 'failed') {
         setUIState('CONNECTION_FAILED');
