@@ -178,8 +178,12 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
     await waitMessage(firstBrowser, m => m.type === MSG_TYPES.JOINED);
     firstBrowser.close();
 
-    const closed = await waitMessage(phone, m => m.type === MSG_TYPES.CLOSED);
-    assert.equal(closed.reason, 'Browser disconnected from signaling relay');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(
+      phone.messages.some(m => m.type === MSG_TYPES.CLOSED),
+      false,
+      'A signaling-only browser disconnect must not tear down phone WebRTC'
+    );
 
     const secondBrowser = await connectClient(port, '10.2.0.3');
     secondBrowser.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.JOIN, pairingCode: reg.pairingCode }));
@@ -188,7 +192,7 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
 
     secondBrowser.close();
     phone.close();
-    console.log('PASS 6: Browser can rejoin without replacing the phone session');
+    console.log('PASS 6: Browser signaling disconnect preserves media and allows rejoin');
   }
 
   // Test 7: Concurrency Load Test (100 Simultaneous Sessions)

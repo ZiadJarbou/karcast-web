@@ -174,14 +174,9 @@ class SessionStore {
       session.pairedAt = null;
       session.state = 'REGISTERED';
       this.sessionsByCode.set(session.pairingCode, session);
-      if (session.phoneSocket) {
-        try {
-          session.phoneSocket.send(createMessage(MSG_TYPES.CLOSED, {
-            sessionId: session.sessionId,
-            reason: 'Browser disconnected from signaling relay'
-          }));
-        } catch (_) {}
-      }
+      // Signaling is only needed to establish WebRTC. A proxy or browser may
+      // close this socket while the peer-to-peer media path is still healthy;
+      // keep the phone peer alive and allow a later browser socket to rejoin.
     }
   }
 
