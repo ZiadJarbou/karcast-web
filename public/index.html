@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>KarCast</title>
-  <link rel="stylesheet" href="style.css?v=2.1">
+  <link rel="stylesheet" href="style.css?v=2.2">
 </head>
 <body>
   <div id="app">
@@ -117,6 +117,21 @@
           <div class="status-panel-text">
             <div id="status-panel-title" class="status-panel-title">Waiting for your phone…</div>
             <div id="status-panel-sub" class="status-panel-sub">This screen will connect automatically.</div>
+            <div class="connection-progress-row">
+              <span>Connection progress</span>
+              <output id="connection-progress-value">0%</output>
+            </div>
+            <div
+              id="connection-progress-track"
+              class="connection-progress-track"
+              role="progressbar"
+              aria-label="Connection progress"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+            >
+              <div id="connection-progress-fill" class="connection-progress-fill"></div>
+            </div>
           </div>
         </div>
 
@@ -128,6 +143,6 @@
     <pre id="metrics-panel" hidden></pre>
   </div>
 
-  <script src="app.js?v=2.1"></script>
+  <script src="app.js?v=2.2"></script>
 </body>
 </html>

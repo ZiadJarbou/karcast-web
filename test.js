@@ -84,6 +84,7 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
     assert.equal(res.status, 200);
     assert.ok(res.headers['content-type'].includes('text/html'));
     assert.ok(res.body.includes('<title>KarCast</title>'));
+    assert.ok(res.body.includes('id="connection-progress-value"'));
     console.log('PASS 1: GET / serves public/index.html');
   }
 
@@ -114,6 +115,7 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
     assert.equal(res.status, 200);
     assert.ok(res.headers['content-type'].includes('application/javascript'));
     assert.ok(res.body.includes('phase3d-unified-client'));
+    assert.ok(res.body.includes('setProgressMilestone(100)'));
     console.log('PASS 3: GET /app.js serves public/app.js');
   }
 

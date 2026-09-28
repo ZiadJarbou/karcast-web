@@ -32,6 +32,9 @@
   const progressTimeline = document.getElementById('progress-timeline');
   const statusPanelTitle = document.getElementById('status-panel-title');
   const statusPanelSub = document.getElementById('status-panel-sub');
+  const connectionProgressTrack = document.getElementById('connection-progress-track');
+  const connectionProgressFill = document.getElementById('connection-progress-fill');
+  const connectionProgressValue = document.getElementById('connection-progress-value');
 
   const circleStep1 = document.getElementById('circle-step-1');
   const badgeStep1 = document.getElementById('badge-step-1');
@@ -54,11 +57,44 @@
   let disconnectGraceTimer = null;
   let connectAttempt = 0;
   let mediaStarted = false;
+  let progressValue = 0;
+  let progressCeiling = 0;
+  let progressTimer = null;
   let seq = 0;
   let pressedPointer = null;
   let lastPoint = { x: 0, y: 0 };
   const CONNECTION_TIMEOUT_MS = 25000;
   const MAX_CONNECT_ATTEMPTS = 3;
+
+  function renderProgress() {
+    const value = Math.max(0, Math.min(100, Math.round(progressValue)));
+    if (connectionProgressValue) connectionProgressValue.textContent = `${value}%`;
+    if (connectionProgressFill) connectionProgressFill.style.width = `${value}%`;
+    if (connectionProgressTrack) connectionProgressTrack.setAttribute('aria-valuenow', String(value));
+  }
+
+  function ensureProgressTimer() {
+    if (progressTimer) return;
+    progressTimer = setInterval(() => {
+      if (progressValue >= progressCeiling) return;
+      progressValue = Math.min(progressCeiling, progressValue + 1);
+      renderProgress();
+    }, 650);
+  }
+
+  function setProgressMilestone(value, ceiling = value) {
+    progressValue = Math.max(progressValue, value);
+    progressCeiling = Math.max(progressCeiling, ceiling);
+    renderProgress();
+    ensureProgressTimer();
+  }
+
+  function resetProgress() {
+    progressValue = 0;
+    progressCeiling = 0;
+    renderProgress();
+    ensureProgressTimer();
+  }
 
   // Diagnostics & Metrics
   const diagnostics = {
@@ -94,6 +130,7 @@
       case 'CODE_EXPIRED':
       case 'PHONE_NOT_AVAILABLE':
       case 'CONNECTION_FAILED':
+        if (newState !== 'READY') resetProgress();
         statusText.textContent = 'Waiting for phone...';
         statusDot.className = 'status-dot connecting';
         overlay.hidden = false;
@@ -111,6 +148,7 @@
 
       case 'PAIRING':
       case 'ESTABLISHING_SECURE_CONNECTION':
+        setProgressMilestone(newState === 'PAIRING' ? 5 : 30, newState === 'PAIRING' ? 18 : 42);
         statusText.textContent = 'Connecting...';
         statusDot.className = 'status-dot connecting';
         overlay.hidden = false;
@@ -158,6 +196,7 @@
         break;
 
       case 'CONNECTED':
+        setProgressMilestone(100);
         statusText.textContent = diagnostics.connectionPath === 'local-direct' ? 'Connected • Local Hotspot' : 'Connected';
         statusDot.className = 'status-dot connected';
         overlay.hidden = false;
@@ -224,6 +263,7 @@
     }
 
     ws.onopen = () => {
+      setProgressMilestone(12, 22);
       diagnostics.signalingState = 'open';
       clearInterval(heartbeatTimer);
       heartbeatTimer = setInterval(() => {
@@ -309,6 +349,7 @@
       return;
     }
     mediaStarted = true;
+    setProgressMilestone(100);
     connectAttempt = 0;
     clearConnectionWatchdog();
     clearTimeout(disconnectGraceTimer);
@@ -330,17 +371,20 @@
       case 'joined':
         sessionId = msg.sessionId;
         connectAttempt++;
+        setProgressMilestone(30, 40);
         setUIState('ESTABLISHING_SECURE_CONNECTION');
         break;
 
       case 'peer_ready':
         if (msg.role === 'phone' || msg.role === 'browser') {
+          setProgressMilestone(44, 52);
           initiateWebRTCOffer();
         }
         break;
 
       case 'answer':
         if (pc && msg.sdp) {
+          setProgressMilestone(66, 74);
           pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(() => {
             setUIState('CONNECTION_FAILED');
           });
@@ -406,13 +450,18 @@
     }
 
     dc = pc.createDataChannel('tesla-touch', { ordered: true });
-    dc.onopen = () => { diagnostics.dataChannelState = 'open'; renderDiagnostics(); };
+    dc.onopen = () => {
+      diagnostics.dataChannelState = 'open';
+      setProgressMilestone(90, 94);
+      renderDiagnostics();
+    };
     dc.onclose = () => { diagnostics.dataChannelState = 'closed'; renderDiagnostics(); };
 
     pc.addTransceiver('video', { direction: 'recvonly' });
 
     pc.ontrack = (e) => {
       if (e.track) {
+        setProgressMilestone(78, 86);
         remoteVideo.srcObject = new MediaStream([e.track]);
         remoteVideo.play().catch(() => {});
         e.track.onended = () => {
@@ -444,7 +493,7 @@
         clearConnectionWatchdog();
         clearTimeout(disconnectGraceTimer);
         disconnectGraceTimer = null;
-        setUIState('CONNECTED');
+        setProgressMilestone(86, 92);
         inspectSelectedIceCandidatePair();
       } else if (pc.iceConnectionState === 'failed') {
         setUIState('CONNECTION_FAILED');
@@ -458,7 +507,7 @@
         clearConnectionWatchdog();
         clearTimeout(disconnectGraceTimer);
         disconnectGraceTimer = null;
-        setUIState('CONNECTED');
+        setProgressMilestone(88, 94);
         inspectSelectedIceCandidatePair();
       } else if (pc.connectionState === 'failed') {
         setUIState('CONNECTION_FAILED');
@@ -478,6 +527,7 @@
     pc.createOffer().then(offer => {
       return pc.setLocalDescription(offer).then(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
+          setProgressMilestone(55, 63);
           ws.send(JSON.stringify({
             version: PROTOCOL_VERSION,
             type: 'offer',
@@ -628,6 +678,7 @@
   }, 300);
 
   renderDiagnostics();
+  resetProgress();
 
   // Expose test helper hooks
   window.__KARCAST_TEST_HOOKS__ = {
