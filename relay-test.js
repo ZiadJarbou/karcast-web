@@ -19,6 +19,7 @@ assert.deepEqual(received, [Buffer.from([75, 67, 1, 7, 8])]);
 
 const nodes = new Map();
 const timers = [];
+const delays = [];
 const node = id => {
   if (!nodes.has(id)) nodes.set(id, { hidden: true, style: {}, classList: { toggle() {} },
     setAttribute() {}, getContext() { return { drawImage() {} }; } });
@@ -41,7 +42,7 @@ class Decoder {
 const window = { VideoDecoder: Decoder, location: { search: '' }, addEventListener() {} };
 const context = { window, document: { getElementById: node }, location: { protocol: 'https:', host: 'app.karcast.app' },
   URLSearchParams, WebSocket: Socket, VideoDecoder: Decoder, Uint8Array, ArrayBuffer, DataView,
-  setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
+  setTimeout: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; }, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
   RTCPeerConnection: function () { throw new Error('Relay must not start WebRTC'); } };
 vm.runInNewContext(fs.readFileSync('public/app.js', 'utf8'), context);
 window.__KARCAST_TEST_HOOKS__.connectAndJoin();
@@ -49,6 +50,7 @@ browserSocket.onopen();
 browserSocket.onmessage({ data: JSON.stringify({ type: 'joined', sessionId: 'test' }) });
 browserSocket.onmessage({ data: JSON.stringify({ type: 'peer_ready', role: 'phone' }) });
 assert(browserSocket.sent.some(m => m.type === 'relay_start'));
+assert(delays.includes(90000), 'Relay startup must allow time for the next AA keyframe');
 assert(!browserSocket.sent.some(m => m.type === 'offer'));
 const key = new Uint8Array(17); key.set([75, 67, 1, 2]);
 context.EncodedVideoChunk = class {};

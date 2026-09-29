@@ -69,7 +69,8 @@
   let relayDecoder = null;
   let relayConfig = [];
   let relayHasKeyframe = false;
-  const CONNECTION_TIMEOUT_MS = 25000;
+  // AA can take about a minute to send another IDR after a browser joins late.
+  const CONNECTION_TIMEOUT_MS = USE_RELAY ? 90000 : 25000;
   const MAX_CONNECT_ATTEMPTS = 3;
 
   function renderProgress() {
@@ -684,6 +685,7 @@
         relayCanvas.hidden = false;
         mediaStarted = true;
         diagnostics.connectionPath = 'secure-relay';
+        diagnostics.protocol = 'wss';
         diagnostics.presentedFrames++;
         setProgressMilestone(100);
         connectAttempt = 0;
