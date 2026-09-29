@@ -62,4 +62,8 @@ assert.equal(timers.length, afterFirstFrame, 'Frames must not repeatedly schedul
 assert.equal(window.__KARCAST_TEST_HOOKS__.getUIState(), 'CONNECTED');
 window.__KARCAST_TEST_HOOKS__.cleanupWebRTC();
 assert.equal(node('relayCanvas').hidden, true);
+const beforeTakeover = timers.length;
+browserSocket.onmessage({ data: JSON.stringify({ type: 'closed', reason: 'Another vehicle browser connected' }) });
+assert.equal(browserSocket.onclose, null, 'A displaced browser must not take the session back');
+assert.equal(timers.length, beforeTakeover, 'A displaced browser must not schedule reconnect');
 console.log('PASS: fragmented video, relay-only startup, first-frame state, and cleanup');

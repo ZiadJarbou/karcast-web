@@ -448,6 +448,15 @@
         break;
 
       case 'closed':
+        if (msg.reason === 'Another vehicle browser connected') {
+          cleanupWebRTC();
+          clearTimeout(reconnectTimer);
+          clearConnectionWatchdog();
+          clearInterval(heartbeatTimer);
+          if (ws) { ws.onclose = null; ws.onerror = null; ws.close(); ws = null; }
+          setUIState('PHONE_NOT_AVAILABLE', 'Connection opened in another browser. Reload to connect here.', true);
+          break;
+        }
         setUIState('PHONE_NOT_AVAILABLE');
         cleanupWebRTC();
         scheduleReconnect();
