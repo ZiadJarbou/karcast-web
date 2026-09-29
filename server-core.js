@@ -77,6 +77,7 @@ class UnifiedAppServer {
         this.connections.add(ws);
 
         ws.on('message', text => this.handleWsMessage(ws, text, clientIp));
+        ws.on('binary', data => this.handleWsBinary(ws, data));
         ws.on('close', () => {
           this.connections.delete(ws);
           this.sessionStore.handleSocketDisconnect(ws);
@@ -195,12 +196,32 @@ class UnifiedAppServer {
           this.handleClose(ws, msg);
           break;
 
+        case MSG_TYPES.RELAY_START:
+        case MSG_TYPES.RELAY_TOUCH:
+        case MSG_TYPES.RELAY_STATUS:
+          this.forwardRelayControl(ws, msg);
+          break;
+
         default:
           ws.send(createErrorMessage(ERROR_CODES.UNKNOWN_MESSAGE_TYPE, `Unsupported message type: ${msg.type}`, msg.messageId));
       }
     } catch (err) {
       ws.send(createErrorMessage(err.code || ERROR_CODES.INTERNAL_ERROR, err.message || 'Error processing request', msg.messageId));
     }
+  }
+
+  forwardRelayControl(ws, msg) {
+    const session = this.sessionStore.getSessionBySocket(ws);
+    if (!session) throw { code: ERROR_CODES.UNAUTHORIZED, message: 'Relay session not found' };
+    const target = session.phoneSocket === ws ? session.browserSocket : session.phoneSocket;
+    if (target) target.send(JSON.stringify(msg));
+  }
+
+  handleWsBinary(ws, data) {
+    const session = this.sessionStore.getSessionBySocket(ws);
+    if (!session || session.phoneSocket !== ws || !session.browserSocket) return;
+    // Binary media is accepted only phone -> paired browser and is never persisted.
+    session.browserSocket.sendBinary(data);
   }
 
   handleRegister(ws, msg, clientIp) {

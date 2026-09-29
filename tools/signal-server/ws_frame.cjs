@@ -44,32 +44,41 @@ class WsSocket extends EventEmitter {
   }
 
   send(text) {
-    if (this.closed || !this.socket.writable) return;
+    return this.sendFrame(0x1, Buffer.from(text, 'utf8'));
+  }
 
-    const payload = Buffer.from(text, 'utf8');
+  sendBinary(data) {
+    return this.sendFrame(0x2, Buffer.isBuffer(data) ? data : Buffer.from(data));
+  }
+
+  sendFrame(opcode, payload) {
+    if (this.closed || !this.socket.writable) return;
+    // Live video is disposable. Keep a slow browser from growing server memory.
+    if (opcode === 0x2 && this.socket.writableLength > 2 * 1024 * 1024) return false;
     const len = payload.length;
 
     let header;
     if (len < 126) {
       header = Buffer.alloc(2);
-      header[0] = 0x81;
+      header[0] = 0x80 | opcode;
       header[1] = len;
     } else if (len < 65536) {
       header = Buffer.alloc(4);
-      header[0] = 0x81;
+      header[0] = 0x80 | opcode;
       header[1] = 126;
       header.writeUInt16BE(len, 2);
     } else {
       header = Buffer.alloc(10);
-      header[0] = 0x81;
+      header[0] = 0x80 | opcode;
       header[1] = 127;
       header.writeBigUInt64BE(BigInt(len), 2);
     }
 
     try {
-      this.socket.write(Buffer.concat([header, payload]));
+      return this.socket.write(Buffer.concat([header, payload]));
     } catch (e) {
       this.handleClose();
+      return false;
     }
   }
 
@@ -94,7 +103,7 @@ class WsSocket extends EventEmitter {
       } else if (payloadLen === 127) {
         if (this.buffer.length < 10) return;
         const bigLen = this.buffer.readBigUInt64BE(2);
-        if (bigLen > BigInt(128 * 1024)) {
+        if (bigLen > BigInt(2 * 1024 * 1024)) {
           this.close(1009, 'Payload too large');
           return;
         }
@@ -128,6 +137,8 @@ class WsSocket extends EventEmitter {
         this.sendPong(frameData);
       } else if (opcode === 0x1) {
         this.emit('message', frameData.toString('utf8'));
+      } else if (opcode === 0x2) {
+        this.emit('binary', frameData);
       }
     }
   }

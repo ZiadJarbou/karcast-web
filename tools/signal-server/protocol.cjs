@@ -27,6 +27,9 @@ const MSG_TYPES = {
   READY: 'ready',
   CLOSE: 'close',
   HEARTBEAT: 'heartbeat',
+  RELAY_START: 'relay_start',
+  RELAY_TOUCH: 'relay_touch',
+  RELAY_STATUS: 'relay_status',
 
   // Server -> Clients
   REGISTERED: 'registered',

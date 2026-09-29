@@ -26,12 +26,17 @@ function connectClient(port, clientIp = '127.0.0.1') {
     req.on('upgrade', (res, socket) => {
       const client = new WsSocket(socket);
       client.messages = [];
+      client.binaryMessages = [];
       client.on('message', text => {
         try {
           const json = JSON.parse(text);
           client.messages.push(json);
           client.emit('json_message', json);
         } catch (_) {}
+      });
+      client.on('binary', data => {
+        client.binaryMessages.push(Buffer.from(data));
+        client.emit('binary_message', data);
       });
       resolve(client);
     });
@@ -62,6 +67,23 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
       }
     }
     client.on('json_message', onMsg);
+  });
+}
+
+function waitBinary(client, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    if (client.binaryMessages.length) return resolve(client.binaryMessages.shift());
+    const timeout = setTimeout(() => {
+      client.removeListener('binary_message', onData);
+      reject(new Error('Timeout waiting for binary relay frame'));
+    }, timeoutMs);
+    function onData(data) {
+      clearTimeout(timeout);
+      client.removeListener('binary_message', onData);
+      client.binaryMessages.shift();
+      resolve(Buffer.from(data));
+    }
+    client.on('binary_message', onData);
   });
 }
 
@@ -170,6 +192,28 @@ function waitMessage(client, filterFn, timeoutMs = 3000) {
   }
 
   // Test 6: Browser disconnect keeps the phone session available for rejoin
+  // Test 6: Paired relay forwards control to phone and binary media to browser
+  {
+    const phone = await connectClient(port, '10.4.0.1');
+    phone.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.REGISTER }));
+    const reg = await waitMessage(phone, m => m.type === MSG_TYPES.REGISTERED);
+    const browser = await connectClient(port, '10.4.0.2');
+    browser.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.JOIN, pairingCode: reg.pairingCode }));
+    await waitMessage(browser, m => m.type === MSG_TYPES.JOINED);
+
+    browser.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.RELAY_START, sessionId: reg.sessionId }));
+    const relayStart = await waitMessage(phone, m => m.type === MSG_TYPES.RELAY_START);
+    assert.equal(relayStart.sessionId, reg.sessionId);
+
+    const frame = Buffer.from([0x4b, 0x43, 1, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0x65]);
+    phone.sendBinary(frame);
+    assert.deepEqual(await waitBinary(browser), frame);
+    phone.close();
+    browser.close();
+    console.log('PASS 6: Paired secure relay forwards control and binary H.264 frames');
+  }
+
+  // Test 7: Browser disconnect keeps the phone session available for rejoin
   {
     const phone = await connectClient(port, '10.2.0.1');
     phone.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.REGISTER }));

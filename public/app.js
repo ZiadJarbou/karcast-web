@@ -24,6 +24,8 @@
   const statusDot = document.getElementById('status-dot');
   const connectionPill = document.getElementById('connection-pill');
   const remoteVideo = document.getElementById('remoteVideo');
+  const relayCanvas = document.getElementById('relayCanvas');
+  const relayContext = relayCanvas ? relayCanvas.getContext('2d', { alpha: false }) : null;
   const metricsPanel = document.getElementById('metrics-panel');
 
   const cardHeading = document.getElementById('card-heading');
@@ -63,6 +65,9 @@
   let seq = 0;
   let pressedPointer = null;
   let lastPoint = { x: 0, y: 0 };
+  let relayDecoder = null;
+  let relayConfig = [];
+  let relayHasKeyframe = false;
   const CONNECTION_TIMEOUT_MS = 25000;
   const MAX_CONNECT_ATTEMPTS = 3;
 
@@ -270,6 +275,7 @@
 
     try {
       ws = new WebSocket(SIGNAL_URL);
+      ws.binaryType = 'arraybuffer';
       diagnostics.signalingState = 'connecting';
     } catch (err) {
       setUIState('CONNECTION_FAILED');
@@ -301,6 +307,10 @@
     };
 
     ws.onmessage = (event) => {
+      if (typeof event.data !== 'string') {
+        handleRelayFrame(event.data);
+        return;
+      }
       let msg;
       try {
         msg = JSON.parse(event.data);
@@ -394,6 +404,17 @@
         connectAttempt++;
         setProgressMilestone(30, 40);
         setUIState('ESTABLISHING_SECURE_CONNECTION');
+        ws.send(JSON.stringify({
+          version: PROTOCOL_VERSION,
+          type: 'relay_start',
+          sessionId: sessionId,
+          messageId: 'relay_' + Date.now(),
+          timestamp: Date.now()
+        }));
+        break;
+
+      case 'relay_status':
+        if (msg.ready) setProgressMilestone(60, 82);
         break;
 
       case 'peer_ready':
@@ -608,26 +629,96 @@
 
   // 5. Touch DataChannel Integration (`tesla-touch`)
   function sendTouch(action, p) {
-    if (!dc || dc.readyState !== 'open') return false;
-    dc.send(JSON.stringify({
-      seq: ++seq,
-      action: action,
-      x: p.x,
-      y: p.y
-    }));
-    return true;
+    const payload = { seq: ++seq, action: action, x: p.x, y: p.y };
+    if (dc && dc.readyState === 'open') {
+      dc.send(JSON.stringify(payload));
+      return true;
+    }
+    if (ws && ws.readyState === WebSocket.OPEN && sessionId) {
+      ws.send(JSON.stringify(Object.assign({
+        version: PROTOCOL_VERSION,
+        type: 'relay_touch',
+        sessionId: sessionId,
+        messageId: 'touch_' + Date.now(),
+        timestamp: Date.now()
+      }, payload)));
+      return true;
+    }
+    return false;
   }
 
   function getTouchPoint(e) {
-    const r = remoteVideo.getBoundingClientRect();
-    const vw = remoteVideo.videoWidth || 1280;
-    const vh = remoteVideo.videoHeight || 720;
+    const target = relayCanvas && !relayCanvas.hidden ? relayCanvas : remoteVideo;
+    const r = target.getBoundingClientRect();
+    const vw = relayCanvas && !relayCanvas.hidden ? relayCanvas.width : (remoteVideo.videoWidth || 1280);
+    const vh = relayCanvas && !relayCanvas.hidden ? relayCanvas.height : (remoteVideo.videoHeight || 720);
     const scale = Math.min(r.width / vw, r.height / vh);
     const w = vw * scale;
     const h = vh * scale;
     const x = (e.clientX - r.left - (r.width - w) / 2) / w;
     const y = (e.clientY - r.top - (r.height - h) / 2) / h;
     return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+  }
+
+  function concatBytes(parts) {
+    const size = parts.reduce((total, part) => total + part.byteLength, 0);
+    const joined = new Uint8Array(size);
+    let offset = 0;
+    parts.forEach(part => { joined.set(part, offset); offset += part.byteLength; });
+    return joined;
+  }
+
+  function ensureRelayDecoder() {
+    if (relayDecoder || !window.VideoDecoder || !relayContext) return !!relayDecoder;
+    relayDecoder = new VideoDecoder({
+      output: frame => {
+        if (relayCanvas.width !== frame.displayWidth || relayCanvas.height !== frame.displayHeight) {
+          relayCanvas.width = frame.displayWidth;
+          relayCanvas.height = frame.displayHeight;
+        }
+        relayContext.drawImage(frame, 0, 0, relayCanvas.width, relayCanvas.height);
+        frame.close();
+        remoteVideo.hidden = true;
+        relayCanvas.hidden = false;
+        mediaStarted = true;
+        diagnostics.connectionPath = 'secure-relay';
+        diagnostics.presentedFrames++;
+        setProgressMilestone(100);
+        connectAttempt = 0;
+        clearConnectionWatchdog();
+        setUIState('CONNECTED');
+      },
+      error: error => {
+        diagnostics.relayDecoderError = String(error && error.message || error);
+        relayHasKeyframe = false;
+      }
+    });
+    relayDecoder.configure({ codec: 'avc1.42E01F', optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+    return true;
+  }
+
+  function handleRelayFrame(payload) {
+    const bytes = payload instanceof ArrayBuffer ? new Uint8Array(payload) : null;
+    if (!bytes || bytes.byteLength < 13 || bytes[0] !== 75 || bytes[1] !== 67 || bytes[2] !== 1) return;
+    const flags = bytes[3];
+    const data = bytes.slice(12);
+    if (flags & 1) {
+      relayConfig = [data];
+      return;
+    }
+    const key = (flags & 2) !== 0;
+    if (!relayHasKeyframe && !key) return;
+    if (!ensureRelayDecoder()) return;
+    let accessUnit = data;
+    if (key && relayConfig.length) accessUnit = concatBytes(relayConfig.concat([data]));
+    const view = new DataView(bytes.buffer, bytes.byteOffset + 4, 8);
+    const timestamp = view.getUint32(0) * 4294967296 + view.getUint32(4);
+    try {
+      relayDecoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: timestamp, data: accessUnit }));
+      if (key) relayHasKeyframe = true;
+    } catch (_) {
+      relayHasKeyframe = false;
+    }
   }
 
   function handleCancelTouch() {
@@ -637,36 +728,35 @@
     }
   }
 
-  remoteVideo.onpointerdown = (e) => {
-    if (pressedPointer !== null || e.button !== 0) return;
-    const p = getTouchPoint(e);
-    if (p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) return;
-    e.preventDefault();
-    lastPoint = p;
-    if (sendTouch('down', p)) {
-      pressedPointer = e.pointerId;
-      remoteVideo.setPointerCapture(e.pointerId);
-    }
-  };
-
-  remoteVideo.onpointermove = (e) => {
-    if (e.pointerId !== pressedPointer) return;
-    e.preventDefault();
-    const p = getTouchPoint(e);
-    lastPoint = p;
-    sendTouch('move', p);
-  };
-
-  remoteVideo.onpointerup = (e) => {
-    if (e.pointerId !== pressedPointer) return;
-    e.preventDefault();
-    const p = getTouchPoint(e);
-    lastPoint = p;
-    sendTouch('up', p);
-    pressedPointer = null;
-  };
-
-  remoteVideo.onpointercancel = remoteVideo.onlostpointercapture = handleCancelTouch;
+  function bindTouchTarget(target) {
+    if (!target) return;
+    target.onpointerdown = (e) => {
+      if (pressedPointer !== null || e.button !== 0) return;
+      const p = getTouchPoint(e);
+      e.preventDefault();
+      lastPoint = p;
+      if (sendTouch('down', p)) {
+        pressedPointer = e.pointerId;
+        target.setPointerCapture(e.pointerId);
+      }
+    };
+    target.onpointermove = (e) => {
+      if (e.pointerId !== pressedPointer) return;
+      e.preventDefault();
+      lastPoint = getTouchPoint(e);
+      sendTouch('move', lastPoint);
+    };
+    target.onpointerup = (e) => {
+      if (e.pointerId !== pressedPointer) return;
+      e.preventDefault();
+      lastPoint = getTouchPoint(e);
+      sendTouch('up', lastPoint);
+      pressedPointer = null;
+    };
+    target.onpointercancel = target.onlostpointercapture = handleCancelTouch;
+  }
+  bindTouchTarget(remoteVideo);
+  bindTouchTarget(relayCanvas);
   window.addEventListener('blur', handleCancelTouch);
 
   // 6. Diagnostics Mode (?metrics=1)
