@@ -311,7 +311,7 @@
 
     ws.onerror = () => {
       diagnostics.signalingState = 'error';
-      if (state !== 'CONNECTED') {
+      if (!hasConnectedPeerTransport()) {
         setUIState('PHONE_NOT_AVAILABLE');
         scheduleReconnect();
       }
@@ -321,12 +321,19 @@
       diagnostics.signalingState = 'closed';
       clearInterval(heartbeatTimer);
 
-      if (state === 'CONNECTED' && pc && pc.connectionState === 'connected') {
+      if (hasConnectedPeerTransport()) {
         setTimeout(reconnectSignalingBackground, 5000);
       } else {
         scheduleReconnect();
       }
     };
+  }
+
+  function hasConnectedPeerTransport() {
+    if (!pc) return false;
+    return pc.connectionState === 'connected' ||
+      pc.iceConnectionState === 'connected' ||
+      pc.iceConnectionState === 'completed';
   }
 
   function scheduleReconnect() {
