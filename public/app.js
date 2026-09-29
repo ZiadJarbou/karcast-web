@@ -16,6 +16,7 @@
   const urlParams = new URLSearchParams(window.location.search);
   const SIGNAL_URL = window.KARCAST_SIGNAL_URL || urlParams.get('signal') || DEFAULT_SIGNAL_URL;
   const SHOW_METRICS = urlParams.get('metrics') === '1';
+  const USE_RELAY = !!window.VideoDecoder && urlParams.get('transport') !== 'webrtc';
 
   // UI Elements
   const overlay = document.getElementById('pairing-overlay');
@@ -404,7 +405,8 @@
         connectAttempt++;
         setProgressMilestone(30, 40);
         setUIState('ESTABLISHING_SECURE_CONNECTION');
-        ws.send(JSON.stringify({
+        armConnectionWatchdog();
+        if (USE_RELAY) ws.send(JSON.stringify({
           version: PROTOCOL_VERSION,
           type: 'relay_start',
           sessionId: sessionId,
@@ -420,7 +422,7 @@
       case 'peer_ready':
         if (msg.role === 'phone' || msg.role === 'browser') {
           setProgressMilestone(44, 52);
-          initiateWebRTCOffer();
+          if (!USE_RELAY) initiateWebRTCOffer();
         }
         break;
 
@@ -686,11 +688,12 @@
         setProgressMilestone(100);
         connectAttempt = 0;
         clearConnectionWatchdog();
-        setUIState('CONNECTED');
+        if (state !== 'CONNECTED') setUIState('CONNECTED');
       },
       error: error => {
         diagnostics.relayDecoderError = String(error && error.message || error);
         relayHasKeyframe = false;
+        relayDecoder = null;
       }
     });
     relayDecoder.configure({ codec: 'avc1.42E01F', optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
@@ -773,6 +776,12 @@
     clearTimeout(disconnectGraceTimer);
     disconnectGraceTimer = null;
     mediaStarted = false;
+    if (relayDecoder) { try { relayDecoder.close(); } catch (_) {} }
+    relayDecoder = null;
+    relayConfig = [];
+    relayHasKeyframe = false;
+    if (relayCanvas) relayCanvas.hidden = true;
+    remoteVideo.hidden = false;
     if (dc) { try { dc.close(); } catch (_) {} dc = null; }
     if (pc) { try { pc.close(); } catch (_) {} pc = null; }
     remoteVideo.srcObject = null;

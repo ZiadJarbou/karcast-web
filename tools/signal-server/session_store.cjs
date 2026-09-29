@@ -200,7 +200,7 @@ class SessionStore {
   cleanupExpired() {
     const now = Date.now();
     for (const [sessionId, session] of this.sessionsById.entries()) {
-      if (now >= session.expiresAt) {
+      if (now >= session.expiresAt && !session.browserSocket) {
         const expiredMsg = createMessage(MSG_TYPES.EXPIRED, {
           sessionId,
           reason: 'Session expired'

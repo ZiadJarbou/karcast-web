@@ -11,6 +11,9 @@ class WsSocket extends EventEmitter {
     this.socket = socket;
     this.buffer = Buffer.alloc(0);
     this.closed = false;
+    this.fragments = [];
+    this.fragmentOpcode = null;
+    this.fragmentBytes = 0;
 
     this.on('error', () => {}); // Prevent unhandled error crashes on TCP reset during teardown
 
@@ -53,8 +56,11 @@ class WsSocket extends EventEmitter {
 
   sendFrame(opcode, payload) {
     if (this.closed || !this.socket.writable) return;
-    // Live video is disposable. Keep a slow browser from growing server memory.
-    if (opcode === 0x2 && this.socket.writableLength > 2 * 1024 * 1024) return false;
+    // Reconnect a slow consumer rather than silently losing H264 reference frames.
+    if (opcode === 0x2 && this.socket.writableLength > 4 * 1024 * 1024) {
+      this.close(1013, 'Video consumer too slow');
+      return false;
+    }
     const len = payload.length;
 
     let header;
@@ -135,10 +141,27 @@ class WsSocket extends EventEmitter {
         return;
       } else if (opcode === 0x9) {
         this.sendPong(frameData);
-      } else if (opcode === 0x1) {
-        this.emit('message', frameData.toString('utf8'));
-      } else if (opcode === 0x2) {
-        this.emit('binary', frameData);
+      } else if (opcode === 0x1 || opcode === 0x2 || opcode === 0x0) {
+        if ((opcode === 0 && this.fragmentOpcode === null) ||
+            (opcode !== 0 && this.fragmentOpcode !== null)) {
+          this.close(1002, 'Invalid continuation');
+          return;
+        }
+        if (opcode !== 0) this.fragmentOpcode = opcode;
+        this.fragmentBytes += frameData.length;
+        if (this.fragmentBytes > 2 * 1024 * 1024) {
+          this.close(1009, 'Message too large');
+          return;
+        }
+        this.fragments.push(frameData);
+        if (fin) {
+          const message = Buffer.concat(this.fragments, this.fragmentBytes);
+          const messageOpcode = this.fragmentOpcode;
+          this.fragments = [];
+          this.fragmentOpcode = null;
+          this.fragmentBytes = 0;
+          this.emit(messageOpcode === 1 ? 'message' : 'binary', messageOpcode === 1 ? message.toString('utf8') : message);
+        }
       }
     }
   }
@@ -172,6 +195,7 @@ class WsSocket extends EventEmitter {
   handleClose() {
     if (this.closed) return;
     this.closed = true;
+    this.socket.destroy();
     this.emit('close');
   }
 }
