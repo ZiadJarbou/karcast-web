@@ -269,6 +269,8 @@
   // 2. Public Signaling Client
   function connectAndJoin() {
     if (!pairingCode) pairingCode = 'auto';
+    retireSignalingSocket();
+    connectAttempt++;
 
     setUIState('PAIRING');
     cleanupWebRTC();
@@ -279,12 +281,18 @@
       ws = new WebSocket(SIGNAL_URL);
       ws.binaryType = 'arraybuffer';
       diagnostics.signalingState = 'connecting';
+      diagnostics.connectionAttempts = connectAttempt;
     } catch (err) {
       setUIState('CONNECTION_FAILED');
+      scheduleReconnect();
       return;
     }
 
+    const socket = ws;
+    armConnectionWatchdog(30000);
+
     ws.onopen = () => {
+      if (ws !== socket) return;
       setProgressMilestone(12, 22);
       diagnostics.signalingState = 'open';
       clearInterval(heartbeatTimer);
@@ -309,6 +317,7 @@
     };
 
     ws.onmessage = (event) => {
+      if (ws !== socket) return;
       if (typeof event.data !== 'string') {
         handleRelayFrame(event.data);
         return;
@@ -322,6 +331,7 @@
     };
 
     ws.onerror = () => {
+      if (ws !== socket) return;
       diagnostics.signalingState = 'error';
       if (!hasConnectedPeerTransport()) {
         setUIState('PHONE_NOT_AVAILABLE');
@@ -329,8 +339,11 @@
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = event => {
+      if (ws !== socket) return;
       diagnostics.signalingState = 'closed';
+      diagnostics.lastSocketCloseCode = event.code;
+      diagnostics.lastSocketCloseReason = event.reason || '';
       clearInterval(heartbeatTimer);
 
       if (hasConnectedPeerTransport()) {
@@ -341,6 +354,14 @@
     };
   }
 
+  function retireSignalingSocket() {
+    if (!ws) return;
+    const socket = ws;
+    ws = null;
+    socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+    try { socket.close(); } catch (_) {}
+  }
+
   function hasConnectedPeerTransport() {
     if (!pc) return false;
     return pc.connectionState === 'connected' ||
@@ -349,6 +370,10 @@
   }
 
   function scheduleReconnect() {
+    clearConnectionWatchdog();
+    clearTimeout(reconnectTimer);
+    clearInterval(heartbeatTimer);
+    retireSignalingSocket();
     if (connectAttempt >= MAX_CONNECT_ATTEMPTS) {
       setUIState(
         'CONNECTION_FAILED',
@@ -361,15 +386,13 @@
     reconnectTimer = setTimeout(connectAndJoin, 2500);
   }
 
-  function armConnectionWatchdog() {
+  function armConnectionWatchdog(timeoutMs = CONNECTION_TIMEOUT_MS) {
     clearConnectionWatchdog();
     connectionWatchdogTimer = setTimeout(() => {
       if (state === 'CONNECTED') return;
       cleanupWebRTC();
-      try { ws?.close(); } catch (_) {}
-      ws = null;
       scheduleReconnect();
-    }, CONNECTION_TIMEOUT_MS);
+    }, timeoutMs);
   }
 
   function clearConnectionWatchdog() {
@@ -403,7 +426,6 @@
     switch (msg.type) {
       case 'joined':
         sessionId = msg.sessionId;
-        connectAttempt++;
         setProgressMilestone(30, 40);
         setUIState('ESTABLISHING_SECURE_CONNECTION');
         armConnectionWatchdog();
@@ -448,6 +470,7 @@
         break;
 
       case 'closed':
+        diagnostics.lastSessionCloseReason = msg.reason || '';
         if (msg.reason === 'Another vehicle browser connected') {
           cleanupWebRTC();
           clearTimeout(reconnectTimer);
@@ -469,6 +492,7 @@
   }
 
   function handleSignalingError(msg) {
+    diagnostics.lastSignalingError = msg.code + ': ' + (msg.message || '');
     switch (msg.code) {
       case 'PAIRING_CODE_INVALID':
         setUIState('INVALID_CODE');
