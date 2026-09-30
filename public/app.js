@@ -72,7 +72,6 @@
   let lastPresentedFrameAt = 0;
   // AA can take about a minute to send another IDR after a browser joins late.
   const CONNECTION_TIMEOUT_MS = USE_RELAY ? 90000 : 25000;
-  const MAX_CONNECT_ATTEMPTS = 3;
 
   function renderProgress() {
     const value = Math.max(0, Math.min(100, Math.round(progressValue)));
@@ -375,16 +374,9 @@
     clearTimeout(reconnectTimer);
     clearInterval(heartbeatTimer);
     retireSignalingSocket();
-    if (connectAttempt >= MAX_CONNECT_ATTEMPTS) {
-      setUIState(
-        'CONNECTION_FAILED',
-        'Connection timed out. On your phone, stop and start KarCast, then reload this page.',
-        true
-      );
-      return;
-    }
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connectAndJoin, 2500);
+    // Keep the vehicle page available across phone Stop/Start cycles.
+    const delay = Math.min(10000, 2500 * Math.max(1, connectAttempt));
+    reconnectTimer = setTimeout(connectAndJoin, delay);
   }
 
   function armConnectionWatchdog(timeoutMs = CONNECTION_TIMEOUT_MS) {
@@ -468,6 +460,7 @@
       case 'expired':
         setUIState('CODE_EXPIRED');
         cleanupWebRTC();
+        scheduleReconnect();
         break;
 
       case 'closed':
@@ -508,6 +501,7 @@
         setUIState('CONNECTION_FAILED');
     }
     cleanupWebRTC();
+    scheduleReconnect();
   }
 
   // 3. WebRTC Direct P2P Connection
