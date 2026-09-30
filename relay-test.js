@@ -22,7 +22,8 @@ const timers = [];
 const delays = [];
 const node = id => {
   if (!nodes.has(id)) nodes.set(id, { hidden: true, style: {}, classList: { toggle() {} },
-    setAttribute() {}, getContext() { return { drawImage() {} }; } });
+    setAttribute() {}, events: {}, addEventListener(type, callback) { this.events[type] = callback; },
+    getContext() { return { drawImage() {} }; } });
   return nodes.get(id);
 };
 let browserSocket;

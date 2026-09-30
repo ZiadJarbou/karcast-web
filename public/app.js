@@ -69,6 +69,7 @@
   let relayDecoder = null;
   let relayConfig = [];
   let relayHasKeyframe = false;
+  let lastPresentedFrameAt = 0;
   // AA can take about a minute to send another IDR after a browser joins late.
   const CONNECTION_TIMEOUT_MS = USE_RELAY ? 90000 : 25000;
   const MAX_CONNECT_ATTEMPTS = 3;
@@ -686,15 +687,11 @@
   function getTouchPoint(e) {
     const target = relayCanvas && !relayCanvas.hidden ? relayCanvas : remoteVideo;
     const r = target.getBoundingClientRect();
-    const vw = relayCanvas && !relayCanvas.hidden ? relayCanvas.width : (remoteVideo.videoWidth || 1280);
-    const vh = relayCanvas && !relayCanvas.hidden ? relayCanvas.height : (remoteVideo.videoHeight || 720);
-    const scale = Math.min(r.width / vw, r.height / vh);
-    const w = vw * scale;
-    const h = vh * scale;
-    const x = (e.clientX - r.left - (r.width - w) / 2) / w;
-    const y = (e.clientY - r.top - (r.height - h) / 2) / h;
+    const x = (e.clientX - r.left) / r.width;
+    const y = (e.clientY - r.top) / r.height;
     return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
   }
+
 
   function concatBytes(parts) {
     const size = parts.reduce((total, part) => total + part.byteLength, 0);
@@ -720,6 +717,7 @@
         diagnostics.connectionPath = 'secure-relay';
         diagnostics.protocol = 'wss';
         diagnostics.presentedFrames++;
+        lastPresentedFrameAt = Date.now();
         setProgressMilestone(100);
         connectAttempt = 0;
         clearConnectionWatchdog();
@@ -795,6 +793,14 @@
   }
   bindTouchTarget(remoteVideo);
   bindTouchTarget(relayCanvas);
+  setInterval(() => {
+    if (state !== 'CONNECTED' || diagnostics.connectionPath !== 'secure-relay' || !lastPresentedFrameAt) return;
+    if (Date.now() - lastPresentedFrameAt < 12000) return;
+    diagnostics.relayStalls = (diagnostics.relayStalls || 0) + 1;
+    lastPresentedFrameAt = 0;
+    setUIState('RECONNECTING', 'Video paused. Reconnecting...', false);
+    scheduleReconnect();
+  }, 3000);
   window.addEventListener('blur', handleCancelTouch);
 
   // 6. Diagnostics Mode (?metrics=1)
@@ -815,6 +821,7 @@
     relayDecoder = null;
     relayConfig = [];
     relayHasKeyframe = false;
+    lastPresentedFrameAt = 0;
     if (relayCanvas) relayCanvas.hidden = true;
     remoteVideo.hidden = false;
     if (dc) { try { dc.close(); } catch (_) {} dc = null; }

@@ -57,15 +57,16 @@ html, body {
 #remoteVideo, #relayCanvas {
   width: 100vw;
   height: 100vh;
-  object-fit: contain;
+  object-fit: fill;
   touch-action: none;
   background: #000;
 }
 
 #relayCanvas {
-  object-fit: contain;
+  object-fit: fill;
   touch-action: none;
 }
+
 
 /* Connection Pill (Overlay when connected) */
 #connection-pill {
