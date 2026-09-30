@@ -92,7 +92,7 @@ class SessionStore {
     let session = this.sessionsByCode.get(pairingCode);
     if (!session && isAutoJoin) {
       // Auto-join active registered phone session for seamless pairing
-      const activeSessions = Array.from(this.sessionsById.values()).filter(s => s.phoneSocket && Date.now() < s.expiresAt);
+      const activeSessions = Array.from(this.sessionsById.values()).filter(s => s.phoneSocket && (s.browserSocket || Date.now() < s.expiresAt));
       if (activeSessions.length > 0) {
         session = activeSessions[activeSessions.length - 1];
       }
@@ -102,7 +102,7 @@ class SessionStore {
       throw { code: ERROR_CODES.PAIRING_CODE_INVALID, message: 'Invalid or unknown pairing code' };
     }
 
-    if (Date.now() >= session.expiresAt) {
+    if (Date.now() >= session.expiresAt && !session.browserSocket) {
       this.closeSession(session.sessionId, 'Pairing code expired');
       throw { code: ERROR_CODES.PAIRING_CODE_EXPIRED, message: 'Pairing code has expired' };
     }
@@ -191,6 +191,13 @@ class SessionStore {
       session.pairedAt = null;
       session.state = 'REGISTERED';
       this.sessionsByCode.set(session.pairingCode, session);
+      // Give reconnection a full grace window even after a long drive.
+      session.expiresAt = Date.now() + SESSION_TTL_MS;
+      try {
+        session.phoneSocket?.send(createMessage(MSG_TYPES.CLOSED, {
+          sessionId: session.sessionId, reason: 'Browser disconnected from signaling relay'
+        }));
+      } catch (_) {}
       // Signaling is only needed to establish WebRTC. A proxy or browser may
       // close this socket while the peer-to-peer media path is still healthy;
       // keep the phone peer alive and allow a later browser socket to rejoin.

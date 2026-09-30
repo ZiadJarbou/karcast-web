@@ -71,6 +71,13 @@
   let relayConfig = [];
   let relayHasKeyframe = false;
   let lastPresentedFrameAt = 0;
+  let pendingCandidates = [];
+  let signalingOnlyReconnect = false;
+  let firstFrameTimer = null;
+  let connectionStartedAt = 0;
+  let mediaHealthTimer = null;
+  let phoneProgressAt = 0;
+  let phoneSourceFrames = 0;
   // AA can take about a minute to send another IDR after a browser joins late.
   const CONNECTION_TIMEOUT_MS = 90000;
 
@@ -268,13 +275,18 @@
   }
 
   // 2. Public Signaling Client
-  function connectAndJoin() {
+  function connectAndJoin(preserveMedia = false) {
+    signalingOnlyReconnect = preserveMedia && hasConnectedPeerTransport();
     if (!pairingCode) pairingCode = 'auto';
     retireSignalingSocket();
     connectAttempt++;
 
-    setUIState('PAIRING');
-    cleanupWebRTC();
+    if (!signalingOnlyReconnect) {
+      connectionStartedAt = Date.now();
+      resetProgress();
+      setUIState('PAIRING');
+      cleanupWebRTC();
+    }
     clearTimeout(reconnectTimer);
     clearConnectionWatchdog();
 
@@ -284,17 +296,17 @@
       diagnostics.signalingState = 'connecting';
       diagnostics.connectionAttempts = connectAttempt;
     } catch (err) {
-      setUIState('CONNECTION_FAILED');
-      scheduleReconnect();
+      if (!signalingOnlyReconnect) setUIState('CONNECTION_FAILED');
+      scheduleReconnect(signalingOnlyReconnect);
       return;
     }
 
     const socket = ws;
-    armConnectionWatchdog(30000);
+    if (!signalingOnlyReconnect) armConnectionWatchdog(30000);
 
     ws.onopen = () => {
       if (ws !== socket) return;
-      setProgressMilestone(12, 22);
+      if (!signalingOnlyReconnect) setProgressMilestone(12, 22);
       diagnostics.signalingState = 'open';
       clearInterval(heartbeatTimer);
       heartbeatTimer = setInterval(() => {
@@ -337,7 +349,7 @@
       if (!hasConnectedPeerTransport()) {
         setUIState('PHONE_NOT_AVAILABLE');
         scheduleReconnect();
-      }
+      } else scheduleReconnect(true);
     };
 
     ws.onclose = event => {
@@ -348,7 +360,7 @@
       clearInterval(heartbeatTimer);
 
       if (hasConnectedPeerTransport()) {
-        setTimeout(reconnectSignalingBackground, 5000);
+        scheduleReconnect(true);
       } else {
         scheduleReconnect();
       }
@@ -370,14 +382,14 @@
       pc.iceConnectionState === 'completed';
   }
 
-  function scheduleReconnect() {
+  function scheduleReconnect(preserveMedia = false) {
     clearConnectionWatchdog();
     clearTimeout(reconnectTimer);
     clearInterval(heartbeatTimer);
     retireSignalingSocket();
     // Keep the vehicle page available across phone Stop/Start cycles.
     const delay = Math.min(10000, 2500 * Math.max(1, connectAttempt));
-    reconnectTimer = setTimeout(connectAndJoin, delay);
+    reconnectTimer = setTimeout(() => connectAndJoin(preserveMedia), delay);
   }
 
   function armConnectionWatchdog(timeoutMs = CONNECTION_TIMEOUT_MS) {
@@ -398,27 +410,28 @@
     if (!pc || remoteVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !remoteVideo.videoWidth) {
       return;
     }
+    if (!mediaStarted) diagnostics.firstFrameMs = Date.now() - connectionStartedAt;
     mediaStarted = true;
+    clearInterval(firstFrameTimer);
+    firstFrameTimer = null;
     setProgressMilestone(100);
     connectAttempt = 0;
     clearConnectionWatchdog();
     clearTimeout(disconnectGraceTimer);
     disconnectGraceTimer = null;
-    setUIState('CONNECTED');
-  }
-
-  function reconnectSignalingBackground() {
-    if (ws && ws.readyState === WebSocket.OPEN) return;
-    try {
-      ws = new WebSocket(SIGNAL_URL);
-      ws.onopen = () => { diagnostics.signalingState = 'open'; };
-      ws.onclose = () => { diagnostics.signalingState = 'closed'; };
-    } catch (_) {}
+    if (state !== 'CONNECTED') setUIState('CONNECTED');
   }
 
   function handleSignalingMessage(msg) {
     switch (msg.type) {
       case 'joined':
+        if (signalingOnlyReconnect && sessionId === msg.sessionId) {
+          signalingOnlyReconnect = false;
+          connectAttempt = 0;
+          break;
+        }
+        if (signalingOnlyReconnect) cleanupWebRTC();
+        signalingOnlyReconnect = false;
         sessionId = msg.sessionId;
         setProgressMilestone(30, 40);
         setUIState('ESTABLISHING_SECURE_CONNECTION');
@@ -437,6 +450,7 @@
         break;
 
       case 'peer_ready':
+        if (hasConnectedPeerTransport()) break;
         if (msg.role === 'phone' || msg.role === 'browser') {
           setProgressMilestone(44, 52);
           if (!USE_RELAY) initiateWebRTCOffer();
@@ -446,19 +460,29 @@
       case 'answer':
         if (pc && msg.sdp) {
           setProgressMilestone(66, 74);
-          pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(() => {
+          const answeringPeer = pc;
+          answeringPeer.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).then(async () => {
+            if (pc !== answeringPeer) return;
+            const candidates = pendingCandidates;
+            pendingCandidates = [];
+            for (const candidate of candidates) await answeringPeer.addIceCandidate(candidate).catch(() => {});
+          }).catch(() => {
+            if (pc !== answeringPeer) return;
             setUIState('CONNECTION_FAILED');
+            scheduleReconnect();
           });
         }
         break;
 
       case 'candidate':
         if (pc && msg.candidate) {
-          pc.addIceCandidate(msg.candidate).catch(() => {});
+          if (pc.remoteDescription) pc.addIceCandidate(msg.candidate).catch(() => {});
+          else if (pendingCandidates.length < 64) pendingCandidates.push(msg.candidate);
         }
         break;
 
       case 'expired':
+        if (hasConnectedPeerTransport()) { scheduleReconnect(true); break; }
         setUIState('CODE_EXPIRED');
         cleanupWebRTC();
         scheduleReconnect();
@@ -475,6 +499,7 @@
           setUIState('PHONE_NOT_AVAILABLE', 'Connection opened in another browser. Reload to connect here.', true);
           break;
         }
+        if (hasConnectedPeerTransport()) { scheduleReconnect(true); break; }
         setUIState('PHONE_NOT_AVAILABLE');
         cleanupWebRTC();
         scheduleReconnect();
@@ -488,6 +513,7 @@
 
   function handleSignalingError(msg) {
     diagnostics.lastSignalingError = msg.code + ': ' + (msg.message || '');
+    if (hasConnectedPeerTransport()) { scheduleReconnect(true); return; }
     switch (msg.code) {
       case 'PAIRING_CODE_INVALID':
         setUIState('INVALID_CODE');
@@ -523,23 +549,47 @@
       return;
     }
 
+    const peer = pc;
     dc = pc.createDataChannel('tesla-touch', { ordered: true });
     dc.onopen = () => {
+      if (pc !== peer) return;
       diagnostics.dataChannelState = 'open';
       setProgressMilestone(90, 94);
       renderDiagnostics();
+      requestVideoRefresh();
+      clearInterval(firstFrameTimer);
+      let attempts = 0;
+      firstFrameTimer = setInterval(() => {
+        if (mediaStarted || ++attempts > 10) { clearInterval(firstFrameTimer); firstFrameTimer = null; return; }
+        requestVideoRefresh();
+      }, 1000);
     };
     dc.onclose = () => { diagnostics.dataChannelState = 'closed'; renderDiagnostics(); };
+    dc.onmessage = event => {
+      if (pc !== peer) return;
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type !== 'media_status') return;
+        diagnostics.androidAutoState = message.state;
+        if (message.sourceFrames > phoneSourceFrames) phoneProgressAt = Date.now();
+        phoneSourceFrames = message.sourceFrames;
+      } catch (_) {}
+    };
+    startMediaHealthChecks(peer);
 
-    pc.addTransceiver('video', { direction: 'recvonly' });
+    const videoTransceiver = pc.addTransceiver('video', { direction: 'recvonly' });
+    if ('jitterBufferTarget' in videoTransceiver.receiver) {
+      try { videoTransceiver.receiver.jitterBufferTarget = 0; } catch (_) {}
+    }
 
     pc.ontrack = (e) => {
+      if (pc !== peer) return;
       if (e.track) {
         setProgressMilestone(78, 86);
         remoteVideo.srcObject = new MediaStream([e.track]);
         remoteVideo.play().catch(() => {});
         e.track.onended = () => {
-          if (!mediaStarted) return;
+          if (pc !== peer || !mediaStarted) return;
           setUIState('CONNECTION_FAILED', 'The video stream stopped. Reconnecting...', true);
           scheduleReconnect();
         };
@@ -564,7 +614,7 @@
 
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
-        clearConnectionWatchdog();
+        if (mediaStarted) clearConnectionWatchdog();
         clearTimeout(disconnectGraceTimer);
         disconnectGraceTimer = null;
         setProgressMilestone(86, 92);
@@ -578,7 +628,7 @@
     pc.onconnectionstatechange = () => {
       diagnostics.peerConnectionState = pc.connectionState;
       if (pc.connectionState === 'connected') {
-        clearConnectionWatchdog();
+        if (mediaStarted) clearConnectionWatchdog();
         clearTimeout(disconnectGraceTimer);
         disconnectGraceTimer = null;
         setProgressMilestone(88, 94);
@@ -599,7 +649,9 @@
     };
 
     pc.createOffer().then(offer => {
-      return pc.setLocalDescription(offer).then(() => {
+      if (pc !== peer) return;
+      return peer.setLocalDescription(offer).then(() => {
+        if (pc !== peer) return;
         if (ws && ws.readyState === WebSocket.OPEN) {
           setProgressMilestone(55, 63);
           ws.send(JSON.stringify({
@@ -613,8 +665,62 @@
         }
       });
     }).catch(() => {
+      if (pc !== peer) return;
       setUIState('CONNECTION_FAILED');
+      scheduleReconnect();
     });
+  }
+
+  function requestVideoRefresh() {
+    if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'keyframe' }));
+  }
+
+  function startMediaHealthChecks(peer) {
+    clearInterval(mediaHealthTimer);
+    let checking = false;
+    let lastFrames = 0;
+    let lastBytes = 0;
+    let decodedAt = Date.now();
+    let receivedAt = 0;
+    let requestedAt = 0;
+    let stalledSince = 0;
+    mediaHealthTimer = setInterval(async () => {
+      if (checking || pc !== peer || !mediaStarted) return;
+      checking = true;
+      try {
+        const stats = await peer.getStats();
+        if (pc !== peer) return;
+        let video;
+        stats.forEach(stat => {
+          if (stat.type === 'inbound-rtp' && (stat.kind === 'video' || stat.mediaType === 'video')) video = stat;
+        });
+        if (!video || typeof video.framesDecoded !== 'number') return;
+        const now = Date.now();
+        if (video.framesDecoded !== lastFrames) { decodedAt = now; stalledSince = 0; }
+        if (video.bytesReceived !== lastBytes) receivedAt = now;
+        lastFrames = video.framesDecoded;
+        lastBytes = video.bytesReceived;
+        diagnostics.framesDecoded = lastFrames;
+        diagnostics.framesDropped = video.framesDropped || 0;
+        diagnostics.videoQuietMs = now - decodedAt;
+        const sourceMoving = (receivedAt > 0 && now - receivedAt < 3000) ||
+          (phoneProgressAt > 0 && now - phoneProgressAt < 3000);
+        if (!sourceMoving || now - decodedAt <= 4000) stalledSince = 0;
+        else if (!stalledSince) stalledSince = now;
+        if (sourceMoving && now - decodedAt > 4000 && now - requestedAt > 3000) {
+          requestedAt = now;
+          requestVideoRefresh();
+          remoteVideo.play().catch(() => {});
+        }
+        if (stalledSince && now - stalledSince > 11000) {
+          clearInterval(mediaHealthTimer);
+          diagnostics.videoStalls = (diagnostics.videoStalls || 0) + 1;
+          setUIState('RECONNECTING', 'Restoring video...', false);
+          scheduleReconnect();
+        }
+        renderDiagnostics();
+      } catch (_) {} finally { checking = false; }
+    }, 1000);
   }
 
   // 4. Selected ICE Candidate Pair Classification
@@ -801,7 +907,9 @@
   bindTouchTarget(relayCanvas);
   setInterval(() => {
     if (state !== 'CONNECTED' || diagnostics.connectionPath !== 'secure-relay' || !lastPresentedFrameAt) return;
-    if (Date.now() - lastPresentedFrameAt < 12000) return;
+    // AA may legitimately stop producing frames on an unchanged screen.
+    // A stalled decoder has pending work; silence alone is not a transport failure.
+    if (Date.now() - lastPresentedFrameAt < 12000 || !relayDecoder || !relayDecoder.decodeQueueSize) return;
     diagnostics.relayStalls = (diagnostics.relayStalls || 0) + 1;
     lastPresentedFrameAt = 0;
     setUIState('RECONNECTING', 'Video paused. Reconnecting...', false);
@@ -819,6 +927,12 @@
   // 7. Cleanup
   function cleanupWebRTC() {
     handleCancelTouch();
+    clearInterval(firstFrameTimer);
+    firstFrameTimer = null;
+    pendingCandidates = [];
+    clearInterval(mediaHealthTimer);
+    mediaHealthTimer = null;
+    phoneProgressAt = phoneSourceFrames = 0;
     clearConnectionWatchdog();
     clearTimeout(disconnectGraceTimer);
     disconnectGraceTimer = null;
@@ -831,7 +945,11 @@
     if (relayCanvas) relayCanvas.hidden = true;
     remoteVideo.hidden = false;
     if (dc) { try { dc.close(); } catch (_) {} dc = null; }
-    if (pc) { try { pc.close(); } catch (_) {} pc = null; }
+    if (pc) {
+      pc.ontrack = pc.onicecandidate = pc.oniceconnectionstatechange = pc.onconnectionstatechange = null;
+      try { pc.close(); } catch (_) {} pc = null;
+    }
+    remoteVideo.onloadeddata = remoteVideo.onplaying = null;
     remoteVideo.srcObject = null;
     diagnostics.peerConnectionState = 'closed';
     diagnostics.dataChannelState = 'closed';

@@ -20,6 +20,9 @@ assert.deepEqual(received, [Buffer.from([75, 67, 1, 7, 8])]);
 const nodes = new Map();
 const timers = [];
 const delays = [];
+const intervals = [];
+let clockMs = Date.now();
+class TestDate extends Date { static now() { return clockMs; } }
 const node = id => {
   if (!nodes.has(id)) nodes.set(id, { hidden: true, style: {}, classList: { toggle() {} },
     setAttribute() {}, events: {}, addEventListener(type, callback) { this.events[type] = callback; },
@@ -35,15 +38,16 @@ class Socket {
   close() {}
 }
 class Decoder {
-  constructor(callbacks) { output = callbacks.output; }
+  constructor(callbacks) { output = callbacks.output; this.decodeQueueSize = 0; }
   configure() {}
   close() {}
   decode() {}
 }
 const window = { VideoDecoder: Decoder, location: { search: '?transport=relay' }, addEventListener() {} };
 const context = { window, document: { getElementById: node }, location: { protocol: 'https:', host: 'app.karcast.app' },
-  URLSearchParams, WebSocket: Socket, VideoDecoder: Decoder, Uint8Array, ArrayBuffer, DataView,
-  setTimeout: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; }, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
+  URLSearchParams, WebSocket: Socket, VideoDecoder: Decoder, Uint8Array, ArrayBuffer, DataView, Date: TestDate,
+  setTimeout: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; }, clearTimeout() {},
+  setInterval(fn, ms) { intervals.push({fn, ms}); return intervals.length; }, clearInterval() {},
   RTCPeerConnection: function () { throw new Error('Relay must not start WebRTC'); } };
 vm.runInNewContext(fs.readFileSync('public/app.js', 'utf8'), context);
 window.__KARCAST_TEST_HOOKS__.connectAndJoin();
@@ -61,6 +65,9 @@ const afterFirstFrame = timers.length;
 output({ displayWidth: 1280, displayHeight: 720, close() {} });
 assert.equal(timers.length, afterFirstFrame, 'Frames must not repeatedly schedule overlay dismissal');
 assert.equal(window.__KARCAST_TEST_HOOKS__.getUIState(), 'CONNECTED');
+clockMs += 60000;
+intervals.find(timer => timer.ms === 3000).fn();
+assert.equal(window.__KARCAST_TEST_HOOKS__.getUIState(), 'CONNECTED', 'An unchanged AA screen must not cause reconnect');
 window.__KARCAST_TEST_HOOKS__.cleanupWebRTC();
 assert.equal(node('relayCanvas').hidden, true);
 const beforeTakeover = timers.length;

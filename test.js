@@ -229,9 +229,9 @@ function waitBinary(client, timeoutMs = 3000) {
 
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(
-      phone.messages.some(m => m.type === MSG_TYPES.CLOSED),
-      false,
-      'A signaling-only browser disconnect must not tear down phone WebRTC'
+      phone.messages.some(m => m.type === MSG_TYPES.CLOSED && m.reason === 'Browser disconnected from signaling relay'),
+      true,
+      'Notify the phone to stop unused relay uploads while preserving connected WebRTC'
     );
 
     const secondBrowser = await connectClient(port, '10.2.0.3');
