@@ -122,6 +122,7 @@ function waitBinary(client, timeoutMs = 3000) {
     assert.equal(res.status, 200);
     assert.ok(res.headers['content-type'].includes('text/css'));
     assert.ok(res.body.includes('--primary-color'));
+    assert.ok(res.body.includes('object-fit: contain'));
     console.log('PASS 2: GET /style.css serves public/style.css');
   }
 
@@ -139,6 +140,7 @@ function waitBinary(client, timeoutMs = 3000) {
     assert.ok(res.body.includes('phase3d-unified-client'));
     assert.ok(res.body.includes('setProgressMilestone(100)'));
     assert.ok(res.body.includes("requestedTransport === 'relay'"));
+    assert.ok(res.body.includes('displayWidth = sourceWidth * scale'));
     console.log('PASS 3: GET /app.js serves public/app.js');
   }
 

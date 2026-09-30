@@ -682,8 +682,18 @@
   function getTouchPoint(e) {
     const target = relayCanvas && !relayCanvas.hidden ? relayCanvas : remoteVideo;
     const r = target.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width;
-    const y = (e.clientY - r.top) / r.height;
+    const sourceWidth = target === relayCanvas ? relayCanvas.width : remoteVideo.videoWidth;
+    const sourceHeight = target === relayCanvas ? relayCanvas.height : remoteVideo.videoHeight;
+    if (!sourceWidth || !sourceHeight || !r.width || !r.height) return null;
+
+    const scale = Math.min(r.width / sourceWidth, r.height / sourceHeight);
+    const displayWidth = sourceWidth * scale;
+    const displayHeight = sourceHeight * scale;
+    const displayLeft = r.left + (r.width - displayWidth) / 2;
+    const displayTop = r.top + (r.height - displayHeight) / 2;
+    const x = (e.clientX - displayLeft) / displayWidth;
+    const y = (e.clientY - displayTop) / displayHeight;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return null;
     return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
   }
 
@@ -764,6 +774,7 @@
     target.onpointerdown = (e) => {
       if (pressedPointer !== null || e.button !== 0) return;
       const p = getTouchPoint(e);
+      if (!p) return;
       e.preventDefault();
       lastPoint = p;
       if (sendTouch('down', p)) {
@@ -774,13 +785,13 @@
     target.onpointermove = (e) => {
       if (e.pointerId !== pressedPointer) return;
       e.preventDefault();
-      lastPoint = getTouchPoint(e);
+      lastPoint = getTouchPoint(e) || lastPoint;
       sendTouch('move', lastPoint);
     };
     target.onpointerup = (e) => {
       if (e.pointerId !== pressedPointer) return;
       e.preventDefault();
-      lastPoint = getTouchPoint(e);
+      lastPoint = getTouchPoint(e) || lastPoint;
       sendTouch('up', lastPoint);
       pressedPointer = null;
     };
