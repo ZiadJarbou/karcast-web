@@ -16,7 +16,8 @@
   const urlParams = new URLSearchParams(window.location.search);
   const SIGNAL_URL = window.KARCAST_SIGNAL_URL || urlParams.get('signal') || DEFAULT_SIGNAL_URL;
   const SHOW_METRICS = urlParams.get('metrics') === '1';
-  const USE_RELAY = !!window.VideoDecoder && urlParams.get('transport') !== 'webrtc';
+  const requestedTransport = (urlParams.get('transport') || '').toLowerCase();
+  const USE_RELAY = !!window.VideoDecoder && requestedTransport === 'relay';
 
   // UI Elements
   const overlay = document.getElementById('pairing-overlay');
@@ -71,7 +72,7 @@
   let relayHasKeyframe = false;
   let lastPresentedFrameAt = 0;
   // AA can take about a minute to send another IDR after a browser joins late.
-  const CONNECTION_TIMEOUT_MS = USE_RELAY ? 90000 : 25000;
+  const CONNECTION_TIMEOUT_MS = 90000;
 
   function renderProgress() {
     const value = Math.max(0, Math.min(100, Math.round(progressValue)));

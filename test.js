@@ -138,6 +138,7 @@ function waitBinary(client, timeoutMs = 3000) {
     assert.ok(res.headers['content-type'].includes('application/javascript'));
     assert.ok(res.body.includes('phase3d-unified-client'));
     assert.ok(res.body.includes('setProgressMilestone(100)'));
+    assert.ok(res.body.includes("requestedTransport === 'relay'"));
     console.log('PASS 3: GET /app.js serves public/app.js');
   }
 

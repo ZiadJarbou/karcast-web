@@ -40,7 +40,7 @@ class Decoder {
   close() {}
   decode() {}
 }
-const window = { VideoDecoder: Decoder, location: { search: '' }, addEventListener() {} };
+const window = { VideoDecoder: Decoder, location: { search: '?transport=relay' }, addEventListener() {} };
 const context = { window, document: { getElementById: node }, location: { protocol: 'https:', host: 'app.karcast.app' },
   URLSearchParams, WebSocket: Socket, VideoDecoder: Decoder, Uint8Array, ArrayBuffer, DataView,
   setTimeout: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; }, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
