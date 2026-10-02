@@ -17,7 +17,10 @@
   const SIGNAL_URL = window.KARCAST_SIGNAL_URL || urlParams.get('signal') || DEFAULT_SIGNAL_URL;
   const SHOW_METRICS = urlParams.get('metrics') === '1';
   const requestedTransport = (urlParams.get('transport') || '').toLowerCase();
-  const USE_RELAY = !!window.VideoDecoder && requestedTransport === 'relay';
+  const RELAY_AVAILABLE = !!window.VideoDecoder && !!window.EncodedVideoChunk;
+  let useRelay = RELAY_AVAILABLE && requestedTransport === 'relay';
+  const AUTO_RELAY = RELAY_AVAILABLE && requestedTransport !== 'webrtc';
+  const DIRECT_START_TIMEOUT_MS = 15000;
 
   // UI Elements
   const overlay = document.getElementById('pairing-overlay');
@@ -68,6 +71,8 @@
   let pressedPointer = null;
   let lastPoint = { x: 0, y: 0 };
   let relayDecoder = null;
+  let relayDecoderFailed = false;
+  let transportFallbackTimer = null;
   let relayConfig = [];
   let relayHasKeyframe = false;
   let lastPresentedFrameAt = 0;
@@ -113,7 +118,8 @@
 
   // Diagnostics & Metrics
   const diagnostics = {
-    diagnosticsBuildId: 'phase3d-unified-client-v2.0',
+    diagnosticsBuildId: 'tesla-auto-relay-20261002',
+    relayAvailable: RELAY_AVAILABLE,
     connectionPath: 'unknown',
     localCandidateType: 'none',
     remoteCandidateType: 'none',
@@ -396,6 +402,7 @@
     clearConnectionWatchdog();
     connectionWatchdogTimer = setTimeout(() => {
       if (state === 'CONNECTED') return;
+      if (tryRelayFallback('Direct video startup timed out')) return;
       cleanupWebRTC();
       scheduleReconnect();
     }, timeoutMs);
@@ -412,6 +419,8 @@
     }
     if (!mediaStarted) diagnostics.firstFrameMs = Date.now() - connectionStartedAt;
     mediaStarted = true;
+    clearTimeout(transportFallbackTimer);
+    transportFallbackTimer = null;
     clearInterval(firstFrameTimer);
     firstFrameTimer = null;
     setProgressMilestone(100);
@@ -436,13 +445,7 @@
         setProgressMilestone(30, 40);
         setUIState('ESTABLISHING_SECURE_CONNECTION');
         armConnectionWatchdog();
-        if (USE_RELAY) ws.send(JSON.stringify({
-          version: PROTOCOL_VERSION,
-          type: 'relay_start',
-          sessionId: sessionId,
-          messageId: 'relay_' + Date.now(),
-          timestamp: Date.now()
-        }));
+        if (useRelay) startRelay();
         break;
 
       case 'relay_status':
@@ -453,7 +456,7 @@
         if (hasConnectedPeerTransport()) break;
         if (msg.role === 'phone' || msg.role === 'browser') {
           setProgressMilestone(44, 52);
-          if (!USE_RELAY) initiateWebRTCOffer();
+          if (!useRelay) initiateWebRTCOffer();
         }
         break;
 
@@ -466,8 +469,9 @@
             const candidates = pendingCandidates;
             pendingCandidates = [];
             for (const candidate of candidates) await answeringPeer.addIceCandidate(candidate).catch(() => {});
-          }).catch(() => {
+          }).catch(error => {
             if (pc !== answeringPeer) return;
+            if (tryRelayFallback('Remote description failed: ' + error.message)) return;
             setUIState('CONNECTION_FAILED');
             scheduleReconnect();
           });
@@ -532,6 +536,31 @@
   }
 
   // 3. WebRTC Direct P2P Connection
+  function startRelay() {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !sessionId) return false;
+    ws.send(JSON.stringify({
+      version: PROTOCOL_VERSION, type: 'relay_start', sessionId,
+      messageId: 'relay_' + Date.now(), timestamp: Date.now()
+    }));
+    return true;
+  }
+
+  function tryRelayFallback(reason) {
+    if (!AUTO_RELAY || useRelay || !sessionId || !ws || ws.readyState !== WebSocket.OPEN) return false;
+    // Keep the pairing socket and progress: only replace the failed media transport.
+    diagnostics.fallbackReason = reason;
+    diagnostics.transport = 'relay';
+    useRelay = true;
+    cleanupWebRTC();
+    setUIState('ESTABLISHING_SECURE_CONNECTION');
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    armConnectionWatchdog();
+    startRelay();
+    renderDiagnostics();
+    return true;
+  }
+
   function initiateWebRTCOffer() {
     if (pc) return;
 
@@ -545,11 +574,15 @@
       });
       diagnostics.peerConnectionState = pc.connectionState;
     } catch (e) {
+      if (tryRelayFallback('WebRTC unavailable: ' + e.message)) return;
       setUIState('CONNECTION_FAILED');
       return;
     }
 
     const peer = pc;
+    if (AUTO_RELAY) transportFallbackTimer = setTimeout(() => {
+      if (pc === peer && !mediaStarted) tryRelayFallback('No direct video frame after 15 seconds');
+    }, DIRECT_START_TIMEOUT_MS);
     dc = pc.createDataChannel('tesla-touch', { ordered: true });
     dc.onopen = () => {
       if (pc !== peer) return;
@@ -600,6 +633,7 @@
     remoteVideo.onplaying = markMediaConnected;
 
     pc.onicecandidate = (e) => {
+      if (pc !== peer) return;
       if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           version: PROTOCOL_VERSION,
@@ -613,6 +647,7 @@
     };
 
     pc.oniceconnectionstatechange = () => {
+      if (pc !== peer) return;
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         if (mediaStarted) clearConnectionWatchdog();
         clearTimeout(disconnectGraceTimer);
@@ -620,12 +655,14 @@
         setProgressMilestone(86, 92);
         inspectSelectedIceCandidatePair();
       } else if (pc.iceConnectionState === 'failed') {
+        if (tryRelayFallback('ICE connection failed')) return;
         setUIState('CONNECTION_FAILED');
         scheduleReconnect();
       }
     };
 
     pc.onconnectionstatechange = () => {
+      if (pc !== peer) return;
       diagnostics.peerConnectionState = pc.connectionState;
       if (pc.connectionState === 'connected') {
         if (mediaStarted) clearConnectionWatchdog();
@@ -634,12 +671,14 @@
         setProgressMilestone(88, 94);
         inspectSelectedIceCandidatePair();
       } else if (pc.connectionState === 'failed') {
+        if (tryRelayFallback('Peer connection failed')) return;
         setUIState('CONNECTION_FAILED');
         scheduleReconnect();
       } else if (pc.connectionState === 'disconnected') {
         clearTimeout(disconnectGraceTimer);
         disconnectGraceTimer = setTimeout(() => {
           if (pc && pc.connectionState === 'disconnected') {
+            if (tryRelayFallback('Direct connection disconnected')) return;
             setUIState('CONNECTION_FAILED', 'The local video connection was interrupted. Reconnecting...', true);
             scheduleReconnect();
           }
@@ -664,8 +703,9 @@
           }));
         }
       });
-    }).catch(() => {
+    }).catch(error => {
       if (pc !== peer) return;
+      if (tryRelayFallback('Offer failed: ' + error.message)) return;
       setUIState('CONNECTION_FAILED');
       scheduleReconnect();
     });
@@ -813,38 +853,51 @@
   }
 
   function ensureRelayDecoder() {
-    if (relayDecoder || !window.VideoDecoder || !relayContext) return !!relayDecoder;
-    relayDecoder = new VideoDecoder({
-      output: frame => {
-        if (relayCanvas.width !== frame.displayWidth || relayCanvas.height !== frame.displayHeight) {
-          relayCanvas.width = frame.displayWidth;
-          relayCanvas.height = frame.displayHeight;
-        }
-        relayContext.drawImage(frame, 0, 0, relayCanvas.width, relayCanvas.height);
-        frame.close();
-        remoteVideo.hidden = true;
-        relayCanvas.hidden = false;
-        mediaStarted = true;
-        diagnostics.connectionPath = 'secure-relay';
-        diagnostics.protocol = 'wss';
-        diagnostics.presentedFrames++;
-        lastPresentedFrameAt = Date.now();
-        setProgressMilestone(100);
-        connectAttempt = 0;
-        clearConnectionWatchdog();
-        if (state !== 'CONNECTED') setUIState('CONNECTED');
-      },
-      error: error => {
-        diagnostics.relayDecoderError = String(error && error.message || error);
-        relayHasKeyframe = false;
-        relayDecoder = null;
-      }
-    });
-    relayDecoder.configure({ codec: 'avc1.42E01F', optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
-    return true;
+    if (relayDecoder || relayDecoderFailed || !window.VideoDecoder || !relayContext) return !!relayDecoder;
+    try {
+      relayDecoder = new VideoDecoder({
+        output: frame => {
+          if (relayCanvas.width !== frame.displayWidth || relayCanvas.height !== frame.displayHeight) {
+            relayCanvas.width = frame.displayWidth;
+            relayCanvas.height = frame.displayHeight;
+          }
+          relayContext.drawImage(frame, 0, 0, relayCanvas.width, relayCanvas.height);
+          frame.close();
+          remoteVideo.hidden = true;
+          relayCanvas.hidden = false;
+          if (!mediaStarted) diagnostics.firstFrameMs = Date.now() - connectionStartedAt;
+          mediaStarted = true;
+          diagnostics.connectionPath = 'secure-relay';
+          diagnostics.protocol = 'wss';
+          diagnostics.presentedFrames++;
+          lastPresentedFrameAt = Date.now();
+          setProgressMilestone(100);
+          connectAttempt = 0;
+          clearConnectionWatchdog();
+          if (state !== 'CONNECTED') setUIState('CONNECTED');
+        },
+        error: failRelayDecoder
+      });
+      relayDecoder.configure({ codec: 'avc1.42E01F', optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+      return true;
+    } catch (error) {
+      failRelayDecoder(error);
+      return false;
+    }
+  }
+
+  function failRelayDecoder(error) {
+    diagnostics.relayDecoderError = String(error && error.message || error);
+    relayDecoderFailed = true;
+    relayHasKeyframe = false;
+    if (relayDecoder) { try { relayDecoder.close(); } catch (_) {} }
+    relayDecoder = null;
+    clearConnectionWatchdog();
+    setUIState('CONNECTION_FAILED', 'This browser could not decode Android Auto video. Please update the vehicle browser and reload.', true);
   }
 
   function handleRelayFrame(payload) {
+    if (!useRelay) return;
     const bytes = payload instanceof ArrayBuffer ? new Uint8Array(payload) : null;
     if (!bytes || bytes.byteLength < 13 || bytes[0] !== 75 || bytes[1] !== 67 || bytes[2] !== 1) return;
     const flags = bytes[3];
@@ -926,6 +979,8 @@
 
   // 7. Cleanup
   function cleanupWebRTC() {
+    clearTimeout(transportFallbackTimer);
+    transportFallbackTimer = null;
     handleCancelTouch();
     clearInterval(firstFrameTimer);
     firstFrameTimer = null;
@@ -939,6 +994,7 @@
     mediaStarted = false;
     if (relayDecoder) { try { relayDecoder.close(); } catch (_) {} }
     relayDecoder = null;
+    relayDecoderFailed = false;
     relayConfig = [];
     relayHasKeyframe = false;
     lastPresentedFrameAt = 0;
