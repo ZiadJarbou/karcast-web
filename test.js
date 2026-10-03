@@ -137,7 +137,7 @@ function waitBinary(client, timeoutMs = 3000) {
     });
     assert.equal(res.status, 200);
     assert.ok(res.headers['content-type'].includes('application/javascript'));
-    assert.ok(res.body.includes('compact-native-layout-20261003'));
+    assert.ok(res.body.includes('bounded-video-recovery-20261003'));
     assert.ok(res.body.includes('setProgressMilestone(100)'));
     assert.ok(res.body.includes('function getTouchPoint(e)'));
     console.log('PASS 3: GET /app.js serves public/app.js');

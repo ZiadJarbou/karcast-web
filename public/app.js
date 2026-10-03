@@ -121,6 +121,16 @@
   let lastPresentedFrameAt = 0;
   let relayReceivedAt = 0;
   let relayRefreshAt = 0;
+  let relayDecoderGeneration = 0;
+  let relayInputQueue = [];
+  let relayInputBytes = 0;
+  let relayInFlight = [];
+  let relayPumping = false;
+  let rawMissingSince = 0;
+  let rawSourceBaseline = 0;
+  const MAX_DECODE_IN_FLIGHT = 8;
+  const MAX_VIDEO_QUEUE_BYTES = 20 * 1024 * 1024;
+  const MAX_VIDEO_QUEUE_FRAMES = 4096;
   let pendingCandidates = [];
   let signalingOnlyReconnect = false;
   let firstFrameTimer = null;
@@ -166,7 +176,10 @@
 
   // Diagnostics & Metrics
   const diagnostics = {
-    diagnosticsBuildId: 'compact-native-layout-20261003-diagnostics',
+    diagnosticsBuildId: 'bounded-video-recovery-20261003',
+    recoveryRequests: 0,
+    relayStalls: 0,
+    signalingReconnects: 0,
     relayAvailable: RELAY_AVAILABLE,
     connectionPath: 'unknown',
     localCandidateType: 'none',
@@ -377,7 +390,7 @@
             timestamp: Date.now()
           }));
         }
-      }, 15000);
+      }, 10000);
 
       ws.send(JSON.stringify({
         version: PROTOCOL_VERSION,
@@ -417,6 +430,7 @@
       diagnostics.signalingState = 'closed';
       diagnostics.lastSocketCloseCode = event.code;
       diagnostics.lastSocketCloseReason = event.reason || '';
+      diagnostics.signalingReconnects++;
       clearInterval(heartbeatTimer);
 
       if (hasConnectedPeerTransport()) {
@@ -782,6 +796,7 @@
   }
 
   function requestVideoRefresh() {
+    diagnostics.recoveryRequests++;
     if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'request_keyframe' }));
     else if (useRelay && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({
       version: PROTOCOL_VERSION, type: 'request_keyframe', sessionId, timestamp: Date.now(), messageId: 'refresh_' + Date.now()
@@ -985,8 +1000,11 @@
   function ensureRelayDecoder() {
     if (relayDecoder || relayDecoderFailed || !window.VideoDecoder || !relayContext) return !!relayDecoder;
     try {
+      const generation = ++relayDecoderGeneration;
       relayDecoder = new VideoDecoder({
         output: frame => {
+          if (generation !== relayDecoderGeneration) { frame.close(); return; }
+          relayInFlight.shift();
           const layout = videoLayout && videoLayout.width === frame.displayWidth && videoLayout.height === frame.displayHeight ? videoLayout : null;
           const visibleWidth = layout ? layout.visibleWidth : frame.displayWidth;
           const visibleHeight = layout ? layout.visibleHeight : frame.displayHeight;
@@ -1023,14 +1041,71 @@
           connectAttempt = 0;
           clearConnectionWatchdog();
           if (state !== 'CONNECTED') setUIState('CONNECTED');
+          updateRawQueueDiagnostics();
+          pumpRelayDecoder();
         },
         error: failRelayDecoder
       });
+      relayDecoder.ondequeue = pumpRelayDecoder;
       relayDecoder.configure({ codec: 'avc1.42E01F', optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
       return true;
     } catch (error) {
       failRelayDecoder(error);
       return false;
+    }
+  }
+
+  function updateRawQueueDiagnostics() {
+    diagnostics.pendingVideoFrames = relayInputQueue.length + relayInFlight.length;
+    diagnostics.videoQueueBytes = relayInputBytes;
+    diagnostics.decodeQueueSize = relayDecoder?.decodeQueueSize || 0;
+  }
+
+  function clearRawDecoderWork() {
+    ++relayDecoderGeneration;
+    if (relayDecoder) { try { relayDecoder.close(); } catch (_) {} }
+    relayDecoder = null;
+    relayInputQueue = [];
+    relayInputBytes = 0;
+    relayInFlight = [];
+    relayHasKeyframe = false;
+    updateRawQueueDiagnostics();
+  }
+
+  function recoverRawVideo(reason, resetDecoder = false) {
+    const now = Date.now();
+    // One replay per recovery episode, with time for its reference chain to decode.
+    if (relayRefreshAt && now - relayRefreshAt < 5000) return;
+    relayRefreshAt = now;
+    diagnostics.relayStalls++;
+    diagnostics.lastRecoveryReason = reason;
+    if (resetDecoder) clearRawDecoderWork();
+    requestVideoRefresh();
+    renderDiagnostics();
+  }
+
+  function pumpRelayDecoder() {
+    if (relayPumping || !relayDecoder || relayDecoderFailed) return;
+    relayPumping = true;
+    try {
+      while (relayInputQueue.length && relayInFlight.length < MAX_DECODE_IN_FLIGHT &&
+          relayDecoder.decodeQueueSize < MAX_DECODE_IN_FLIGHT) {
+        const unit = relayInputQueue.shift();
+        relayInputBytes -= unit.data.byteLength;
+        const pending = { since: Date.now() };
+        relayInFlight.push(pending);
+        try {
+          relayDecoder.decode(new EncodedVideoChunk(unit));
+        } catch (_) {
+          // A missing reference requires a new IDR chain, not a new peer/session.
+          clearRawDecoderWork();
+          recoverRawVideo('Video decode rejected an access unit');
+          break;
+        }
+      }
+    } finally {
+      relayPumping = false;
+      updateRawQueueDiagnostics();
     }
   }
 
@@ -1057,13 +1132,13 @@
       rawFrame.bytes.set(p.subarray(12, 20), 4);
     }
     if (!rawFrame || rawFrame.id !== id || rawFrame.count !== count || rawFrame.size !== size || rawFrame.next !== part ||
-        rawFrame.offset + p.length - 24 > rawFrame.bytes.length) { rawFrame = null; requestVideoRefresh(); return; }
+        rawFrame.offset + p.length - 24 > rawFrame.bytes.length) { rawFrame = null; recoverRawVideo('Incomplete video access unit', true); return; }
     rawFrame.bytes.set(p.subarray(24), rawFrame.offset);
     rawFrame.offset += p.length - 24; rawFrame.next++;
     if (rawFrame.next === count) {
       const frame = rawFrame; rawFrame = null;
       if (frame.offset === frame.bytes.length) handleRelayFrame(frame.bytes.buffer, true);
-      else requestVideoRefresh();
+      else recoverRawVideo('Incomplete video access unit', true);
     }
   }
 
@@ -1071,7 +1146,6 @@
     if (!useRelay && !raw) return;
     const bytes = payload instanceof ArrayBuffer ? new Uint8Array(payload) : null;
     if (!bytes || bytes.byteLength < 13 || bytes[0] !== 75 || bytes[1] !== 67 || bytes[2] !== 1) return;
-    relayReceivedAt = Date.now();
     const flags = bytes[3];
     const data = bytes.slice(12);
     if (flags & 4) {
@@ -1083,18 +1157,25 @@
       return;
     }
     const key = (flags & 2) !== 0;
+    // Layout/SPS/PPS and phone heartbeats are not pending video pictures.
+    relayReceivedAt = Date.now();
+    rawMissingSince = 0;
+    rawSourceBaseline = phoneSourceFrames;
     if (!relayHasKeyframe && !key) return;
     if (!ensureRelayDecoder()) return;
     let accessUnit = data;
     if (key && relayConfig.length) accessUnit = concatBytes(relayConfig.concat([data]));
     const view = new DataView(bytes.buffer, bytes.byteOffset + 4, 8);
     const timestamp = view.getUint32(0) * 4294967296 + view.getUint32(4);
-    try {
-      relayDecoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: timestamp, data: accessUnit }));
-      if (key) relayHasKeyframe = true;
-    } catch (_) {
-      relayHasKeyframe = false;
+    if (relayInputBytes + accessUnit.byteLength > MAX_VIDEO_QUEUE_BYTES ||
+        relayInputQueue.length >= MAX_VIDEO_QUEUE_FRAMES) {
+      recoverRawVideo('Video decode queue exceeded its limit', true);
+      return;
     }
+    if (key) relayHasKeyframe = true;
+    relayInputQueue.push({ type: key ? 'key' : 'delta', timestamp, data: accessUnit });
+    relayInputBytes += accessUnit.byteLength;
+    pumpRelayDecoder();
   }
 
   function handleCancelTouch() {
@@ -1140,12 +1221,32 @@
     if (state !== 'CONNECTED' || !['secure-relay', 'local-raw'].includes(diagnostics.connectionPath) || !lastPresentedFrameAt) return;
     // AA may legitimately stop producing frames on an unchanged screen.
     // A stalled decoder has pending work; silence alone is not a transport failure.
-    if (Date.now() - lastPresentedFrameAt <= 2000 || document.hidden) return;
-    if (Date.now() - relayReceivedAt > 2000 && Date.now() - phoneProgressAt > 3000) return;
-    if (Date.now() - relayRefreshAt < 2000) return;
-    relayRefreshAt = Date.now();
-    diagnostics.relayStalls = (diagnostics.relayStalls || 0) + 1;
-    requestVideoRefresh();
+    const now = Date.now();
+    if (document.hidden) {
+      relayInFlight.forEach(unit => { unit.since = now; });
+      rawMissingSince = 0;
+      rawSourceBaseline = phoneSourceFrames;
+      return;
+    }
+    updateRawQueueDiagnostics();
+    // Start the deadline when undecoded work arrives, not at the last static image.
+    // A freshly submitted frame after a minute of silence still gets 2s to render.
+    if (relayInFlight.length && now - relayInFlight[0].since > 2000 &&
+        now - lastPresentedFrameAt > 2000) {
+      recoverRawVideo('Pending video stopped rendering', true);
+    }
+    // Phone progress alone is not a decoder stall. Require a sustained absence
+    // of access units AND multiple new source frames before a transport refresh.
+    if (now - relayReceivedAt <= 3000 || now - phoneProgressAt > 3000) {
+      rawMissingSince = 0;
+      rawSourceBaseline = phoneSourceFrames;
+    } else if (!rawMissingSince) {
+      rawMissingSince = now;
+      rawSourceBaseline = phoneSourceFrames;
+    } else if (now - rawMissingSince >= 8000 && phoneSourceFrames - rawSourceBaseline >= 3) {
+      recoverRawVideo('Phone video is advancing but no access units arrive');
+    }
+    renderDiagnostics();
   }, 1000);
   window.addEventListener('blur', handleCancelTouch);
 
@@ -1178,12 +1279,12 @@
     clearTimeout(disconnectGraceTimer);
     disconnectGraceTimer = null;
     mediaStarted = false;
-    if (relayDecoder) { try { relayDecoder.close(); } catch (_) {} }
-    relayDecoder = null;
+    clearRawDecoderWork();
     relayDecoderFailed = false;
     relayConfig = [];
     relayHasKeyframe = false;
     lastPresentedFrameAt = 0;
+    relayReceivedAt = relayRefreshAt = rawMissingSince = rawSourceBaseline = 0;
     if (relayCanvas) relayCanvas.hidden = true;
     if (relayDockCanvas) relayDockCanvas.hidden = true;
     if (dockVideo) { dockVideo.hidden = false; dockVideo.srcObject = null; }

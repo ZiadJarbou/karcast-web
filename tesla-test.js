@@ -10,6 +10,8 @@ function client(search = '', options = {}) {
   const peers = [];
   const nodes = new Map();
   const decoders = [];
+  let clockMs = Date.now();
+  class TestDate extends Date { static now() { return clockMs; } }
   let next = 0;
   const timer = (fn, ms) => { timers.set(++next, { fn, ms }); return next; };
   const node = id => {
@@ -38,18 +40,23 @@ function client(search = '', options = {}) {
     close() { this.closed = true; }
   }
   class Decoder {
-    constructor(callbacks) { this.callbacks = callbacks; this.decodeQueueSize = 0; decoders.push(this); }
+    constructor(callbacks) { this.callbacks = callbacks; this.decodeQueueSize = 0; this.pending = []; this.inputs = []; decoders.push(this); }
     configure() { if (options.decoderError) throw new Error('H264 unsupported'); }
-    decode() { this.callbacks.output({ displayWidth: 1280, displayHeight: 720, close() {} }); }
+    decode(chunk) {
+      this.inputs.push(chunk);
+      if (options.manualOutput) this.pending.push(chunk);
+      else this.output();
+    }
+    output() { this.pending.shift(); this.callbacks.output({ displayWidth: 1280, displayHeight: 720, close() {} }); }
     close() { this.closed = true; }
   }
-  class Chunk {}
+  class Chunk { constructor(init) { Object.assign(this, init); } }
   const window = { VideoDecoder: Decoder, EncodedVideoChunk: Chunk, location: { search: search + (search ? '&' : '?') + 'pair_code=123456' }, addEventListener() {} };
   if (options.noRelay) { delete window.VideoDecoder; delete window.EncodedVideoChunk; }
   vm.runInNewContext(source, { window, document: { getElementById: node },
     location: { protocol: 'https:', host: 'app.karcast.app' }, URLSearchParams,
     WebSocket: Socket, RTCPeerConnection: Peer, VideoDecoder: Decoder, EncodedVideoChunk: Chunk,
-    Uint8Array, ArrayBuffer, DataView, HTMLMediaElement: { HAVE_CURRENT_DATA: 2 }, MediaStream: class {},
+    Uint8Array, ArrayBuffer, DataView, Date: TestDate, HTMLMediaElement: { HAVE_CURRENT_DATA: 2 }, MediaStream: class {},
     setTimeout: timer, setInterval: timer, clearTimeout: id => timers.delete(id), clearInterval: id => timers.delete(id) });
   const hooks = window.__KARCAST_TEST_HOOKS__;
   const message = data => sockets.at(-1).onmessage({ data: JSON.stringify(data) });
@@ -60,6 +67,8 @@ function client(search = '', options = {}) {
   };
   hooks.connectAndJoin(); join();
   return { hooks, sockets, peers, decoders, node, join, message, timers,
+    advance(ms) { clockMs += ms; },
+    tick() { for (const t of [...timers.values()]) if (t.ms === 1000) t.fn(); },
     run(ms) { const entry = [...timers].reverse().find(([, t]) => t.ms === ms); assert(entry); timers.delete(entry[0]); entry[1].fn(); },
     frame() { const packet = new Uint8Array(17); packet.set([75, 67, 1, 2]); sockets.at(-1).onmessage({ data: packet.buffer }); } };
 }
@@ -127,7 +136,7 @@ function client(search = '', options = {}) {
   assert.equal(working.node('dockVideo').srcObject, working.node('remoteVideo').srcObject,
     'The dock reuses the received video track instead of opening another transport');
   working.node('remoteVideo').onplaying();
-  assert.equal([...working.timers.values()].filter(t => t.ms === 15000).length, 1, 'First frame leaves only the signaling heartbeat');
+  assert.equal([...working.timers.values()].filter(t => t.ms === 10000).length, 1, 'First frame leaves only the signaling heartbeat');
   assert(!working.sockets[0].sent.some(m => m.type === 'relay_start'));
   assert.equal(working.peers[0].closed, undefined);
 
@@ -181,9 +190,9 @@ function client(search = '', options = {}) {
   assert.match(failed.hooks.getDiagnostics().fallbackReason, /Peer/);
 
   const disabled = client('?transport=webrtc'); await flush();
-  assert.equal([...disabled.timers.values()].filter(t => t.ms === 15000).length, 1);
+  assert.equal([...disabled.timers.values()].filter(t => t.ms === 10000).length, 1);
   const unsupported = client('', { noRelay: true }); await flush();
-  assert.equal([...unsupported.timers.values()].filter(t => t.ms === 15000).length, 1);
+  assert.equal([...unsupported.timers.values()].filter(t => t.ms === 10000).length, 1);
   const unavailable = client('?transport=auto', { peerError: true });
   assert(unavailable.sockets[0].sent.some(m => m.type === 'relay_start'));
   const badDecoder = client('?transport=relay', { decoderError: true });
@@ -192,5 +201,68 @@ function client(search = '', options = {}) {
   assert.equal(badDecoder.hooks.getUIState(), 'CONNECTION_FAILED');
   assert.equal(badDecoder.hooks.getDiagnostics().relayDecoderError, 'H264 unsupported');
   assert(![...badDecoder.timers.values()].some(t => t.ms === 90000));
+
+  // Reproduce the production failure: a static map followed by a slow AA
+  // update must not replay its entire history just because the image is old.
+  const rawHealth = client('', { manualOutput: true }); await flush();
+  const healthTouch = rawHealth.peers[0].channels.find(c => c.label === 'tesla-touch');
+  healthTouch.readyState = 'open'; healthTouch.sent = [];
+  healthTouch.send = text => healthTouch.sent.push(JSON.parse(text));
+  const healthVideo = rawHealth.peers[0].channels.find(c => c.label === 'karcast-video');
+  let frameId = 0;
+  const rawPicture = (key = false, size = 6) => {
+    const p = new Uint8Array(24 + size); p.set([75, 67, 2, key ? 2 : 0]);
+    const view = new DataView(p.buffer);
+    view.setUint32(4, ++frameId); view.setUint16(10, 1); view.setUint32(20, size);
+    view.setUint32(16, frameId * 33000); p.set([0, 0, 0, 1, key ? 101 : 65, 12], 24);
+    healthVideo.onmessage({ data: p.buffer });
+  };
+  rawPicture(true); rawHealth.decoders[0].output();
+  const beforeStatic = healthTouch.sent.length;
+  rawHealth.advance(60000);
+  healthTouch.onmessage({ data: JSON.stringify({ type: 'media_status', sourceFrames: 100 }) });
+  rawHealth.tick();
+  assert.equal(healthTouch.sent.length, beforeStatic, 'Phone status with no pending picture is not a decoder stall');
+  rawPicture(); rawHealth.tick();
+  rawHealth.advance(1000); rawHealth.tick();
+  assert.equal(healthTouch.sent.length, beforeStatic, 'A frame after a static interval gets its own render deadline');
+  rawHealth.decoders[0].output(); rawHealth.advance(1000); rawHealth.tick();
+  assert.equal(healthTouch.sent.length, beforeStatic, 'A completed frame never triggers a replay');
+
+  // Lost decoder output requires one bounded replay, preserving peer and pairing.
+  rawPicture(); rawHealth.advance(2100); rawHealth.tick();
+  assert.equal(healthTouch.sent.length, beforeStatic + 1, 'Actually pending video recovers after two seconds');
+  assert.equal(rawHealth.decoders[0].closed, true, 'A stuck decoder releases its pending work');
+  assert.equal(rawHealth.peers[0].closed, undefined, 'Decoder recovery preserves the peer');
+  rawHealth.tick(); rawHealth.tick();
+  assert.equal(healthTouch.sent.length, beforeStatic + 1, 'Recovery cannot repeat every watchdog tick');
+  rawPicture(true); const replayDecoder = rawHealth.decoders.at(-1);
+  for (let i = 0; i < 100; i++) rawPicture();
+  assert.equal(replayDecoder.inputs.length, 8, 'Cached GOP replay has at most eight submitted pictures');
+  assert.equal(rawHealth.hooks.getDiagnostics().pendingVideoFrames, 101);
+  while (replayDecoder.pending.length) replayDecoder.output();
+  assert.equal(replayDecoder.inputs.length, 101, 'Pacing preserves every reference picture');
+  assert.equal(rawHealth.hooks.getDiagnostics().pendingVideoFrames, 0);
+  const framesAfterReplay = rawHealth.hooks.getDiagnostics().presentedFrames;
+  rawHealth.decoders[0].output();
+  assert.equal(rawHealth.hooks.getDiagnostics().presentedFrames, framesAfterReplay, 'Closed decoder callbacks cannot repaint stale video');
+
+  rawHealth.advance(6000); rawHealth.tick();
+  const requestsBeforeLoss = healthTouch.sent.length;
+  for (let i = 0; i < 11; i++) {
+    rawHealth.advance(1000);
+    healthTouch.onmessage({ data: JSON.stringify({ type: 'media_status', sourceFrames: 110 + i }) });
+    rawHealth.tick();
+  }
+  assert.equal(healthTouch.sent.length, requestsBeforeLoss + 1, 'Sustained missing access units with source progress requests a refresh');
+  assert.equal(rawHealth.peers[0].closed, undefined, 'Missing video recovery retains the connection');
+  rawHealth.advance(6000);
+  rawPicture(true);
+  for (let i = 0; i < 35; i++) rawPicture(false, 1024 * 1024);
+  assert.equal(rawHealth.hooks.getDiagnostics().lastRecoveryReason, 'Video decode queue exceeded its limit');
+  assert(rawHealth.hooks.getDiagnostics().videoQueueBytes <= 20 * 1024 * 1024, 'Unrendered compressed video stays within its memory budget');
+  assert.equal(rawHealth.peers[0].closed, undefined, 'Queue overflow does not tear down the paired transport');
+  rawHealth.hooks.cleanupWebRTC();
+  assert.equal(rawHealth.hooks.getDiagnostics().pendingVideoFrames, 0);
   console.log('PASS: Tesla first-frame fallback, immediate failure, relay reconnect, direct success, and unsupported decoder');
 })().catch(error => { console.error(error); process.exitCode = 1; });

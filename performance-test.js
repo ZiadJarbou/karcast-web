@@ -109,7 +109,7 @@ const runReconnect = () => {
   assert.equal(hooks.getUIState(), 'CONNECTED');
   staleClose({ code: 1006 });
   assert.equal(hooks.getDiagnostics().signalingState, 'open');
-  assert([...timers.values()].some(t => t.ms === 15000), 'Resumed signaling has a heartbeat');
+  assert([...timers.values()].some(t => t.ms === 10000), 'Resumed signaling has a heartbeat');
 
   message({ type: 'closed', reason: 'Phone disconnected from signaling relay' });
   assert.equal(peer.closed, undefined, 'An internet interruption need not stop local video');
