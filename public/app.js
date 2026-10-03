@@ -166,7 +166,7 @@
 
   // Diagnostics & Metrics
   const diagnostics = {
-    diagnosticsBuildId: 'compact-native-layout-20261003',
+    diagnosticsBuildId: 'compact-native-layout-20261003-diagnostics',
     relayAvailable: RELAY_AVAILABLE,
     connectionPath: 'unknown',
     localCandidateType: 'none',
@@ -669,6 +669,8 @@
         diagnostics.androidAutoState = message.state;
         if (message.sourceFrames > phoneSourceFrames) phoneProgressAt = Date.now();
         phoneSourceFrames = message.sourceFrames;
+        diagnostics.phoneSourceFrames = phoneSourceFrames;
+        renderDiagnostics();
       } catch (_) {}
     };
     startMediaHealthChecks(peer);
