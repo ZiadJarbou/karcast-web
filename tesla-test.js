@@ -13,8 +13,9 @@ function client(search = '', options = {}) {
   let next = 0;
   const timer = (fn, ms) => { timers.set(++next, { fn, ms }); return next; };
   const node = id => {
-    if (!nodes.has(id)) nodes.set(id, { hidden: true, style: {}, classList: { toggle() {} },
-      setAttribute() {}, addEventListener() {}, getContext() { return { drawImage() {} }; },
+    if (!nodes.has(id)) nodes.set(id, { hidden: true, style: {setProperty(name,value) {this[name]=value;}}, classList: { toggle() {} },
+      setAttribute() {}, addEventListener() {}, setPointerCapture() {},
+      getBoundingClientRect() { return this.rect; }, getContext() { return { drawImage() {} }; },
       play() { return Promise.resolve(); }, readyState: 2, videoWidth: 1280, videoHeight: 720 });
     return nodes.get(id);
   };
@@ -87,10 +88,49 @@ function client(search = '', options = {}) {
 
   const working = client(); await flush();
   working.peers[0].ontrack({ track: {} });
+  assert.equal(working.node('dockVideo').srcObject, working.node('remoteVideo').srcObject,
+    'The dock reuses the received video track instead of opening another transport');
   working.node('remoteVideo').onplaying();
   assert.equal([...working.timers.values()].filter(t => t.ms === 15000).length, 1, 'First frame leaves only the signaling heartbeat');
   assert(!working.sockets[0].sent.some(m => m.type === 'relay_start'));
   assert.equal(working.peers[0].closed, undefined);
+
+  // The former top/bottom letterbox areas now belong to the native screen.
+  // Exercise real pointer handlers through the relay, including after resize.
+  const video = working.node('remoteVideo');
+  working.node('relayCanvas').hidden = true;
+  video.hidden = false;
+  const tap = (target, x, y) => {
+    const event = { clientX:x, clientY:y, pointerId:1, button:0, preventDefault() {} };
+    target.onpointerdown(event); target.onpointerup(event);
+    return working.sockets.at(-1).sent.filter(m => m.type === 'relay_touch').at(-1);
+  };
+  for (const [width, height] of [[930,720], [1280,720], [1600,600], [600,900]]) {
+    working.node('stream-container').rect = {left:10,top:20,width,height};
+    const dockHeight = Math.min(width / 10, height * 0.4);
+    const contentHeight = height - dockHeight;
+    for (const y of [0.01, 0.5, 0.99]) {
+      const sourceY = y * 720;
+      const displayY = sourceY <= 592 ? sourceY / 592 * contentHeight
+        : contentHeight + (sourceY - 592) / 128 * dockHeight;
+      const target = sourceY <= 592 ? video : working.node('dockVideo');
+      const touch = tap(target, 10 + width * 0.5, 20 + displayY);
+      assert.equal(touch.action, 'up');
+      assert(Math.abs(touch.x - 0.5) < 1e-10);
+      assert(Math.abs(touch.y - y) < 1e-10, 'Full-height map and bottom dock map to native coordinates after resize');
+    }
+  }
+  const canvas = working.node('relayCanvas');
+  canvas.hidden = false; canvas.width = 1280; canvas.height = 720;
+  working.node('stream-container').rect = {left:0,top:0,width:930,height:720};
+  const dockTouch = tap(working.node('relayDockCanvas'), 465, 627 + (712.8 - 592) / 128 * 93);
+  assert(Math.abs(dockTouch.y - 0.99) < 1e-10, 'Relay canvas uses the same full-height touch mapping');
+  const beforeOutside = working.sockets.at(-1).sent.length;
+  canvas.onpointerdown({clientX:465,clientY:721,pointerId:1,button:0,preventDefault() {}});
+  assert.equal(working.sockets.at(-1).sent.length, beforeOutside, 'Outside taps are rejected');
+  working.hooks.cleanupWebRTC();
+  assert.equal(working.node('dockVideo').srcObject, null, 'Cleanup releases the dock track');
+  assert.equal(working.node('relayDockCanvas').hidden, true, 'Cleanup hides the relay dock');
 
   const failed = client(); await flush();
   const stale = failed.peers[0].onconnectionstatechange;

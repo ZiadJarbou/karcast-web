@@ -29,8 +29,15 @@
   const statusDot = document.getElementById('status-dot');
   const connectionPill = document.getElementById('connection-pill');
   const remoteVideo = document.getElementById('remoteVideo');
+  const dockVideo = document.getElementById('dockVideo');
+  const streamContainer = document.getElementById('stream-container');
   const relayCanvas = document.getElementById('relayCanvas');
   const relayContext = relayCanvas ? relayCanvas.getContext('2d', { alpha: false }) : null;
+  const relayDockCanvas = document.getElementById('relayDockCanvas');
+  const relayDockContext = relayDockCanvas ? relayDockCanvas.getContext('2d', { alpha: false }) : null;
+  // KarCast's verified 720p/256-dpi Android Auto profile has a 128px native dock.
+  // This normalized split also follows resolution changes made by WebRTC.
+  const DOCK_SHARE = 128 / 720;
   const metricsPanel = document.getElementById('metrics-panel');
 
   const cardHeading = document.getElementById('card-heading');
@@ -417,6 +424,7 @@
     if (!pc || remoteVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !remoteVideo.videoWidth) {
       return;
     }
+    if (dockVideo?.paused) dockVideo.play().catch(() => {});
     if (!mediaStarted) diagnostics.firstFrameMs = Date.now() - connectionStartedAt;
     mediaStarted = true;
     clearTimeout(transportFallbackTimer);
@@ -620,6 +628,11 @@
       if (e.track) {
         setProgressMilestone(78, 86);
         remoteVideo.srcObject = new MediaStream([e.track]);
+        // Reuse the same received track; no second peer or video decoder is created here.
+        if (dockVideo) {
+          dockVideo.srcObject = remoteVideo.srcObject;
+          dockVideo.play().catch(() => {});
+        }
         remoteVideo.play().catch(() => {});
         e.track.onended = () => {
           if (pc !== peer || !mediaStarted) return;
@@ -749,6 +762,7 @@
         // Decoding can continue while the video element stops presenting. Include
         // presentation health so this case does not require a page refresh.
         const quality = remoteVideo.getVideoPlaybackQuality?.();
+        if (dockVideo?.paused && !dockVideo.hidden) dockVideo.play().catch(() => {});
         const presented = quality ? quality.totalVideoFrames - quality.droppedVideoFrames : null;
         if (presented !== null && presented !== lastPresented) presentedAt = now;
         lastPresented = presented;
@@ -838,21 +852,38 @@
 
   function getTouchPoint(e) {
     const target = relayCanvas && !relayCanvas.hidden ? relayCanvas : remoteVideo;
-    const r = target.getBoundingClientRect();
+    const r = streamContainer?.getBoundingClientRect?.();
     const sourceWidth = target === relayCanvas ? relayCanvas.width : remoteVideo.videoWidth;
     const sourceHeight = target === relayCanvas ? relayCanvas.height : remoteVideo.videoHeight;
-    if (!sourceWidth || !sourceHeight || !r.width || !r.height) return null;
+    if (!sourceWidth || !sourceHeight || !r?.width || !r.height) return null;
 
-    const scale = Math.min(r.width / sourceWidth, r.height / sourceHeight);
-    const displayWidth = sourceWidth * scale;
-    const displayHeight = sourceHeight * scale;
-    const displayLeft = r.left + (r.width - displayWidth) / 2;
-    const displayTop = r.top + (r.height - displayHeight) / 2;
-    const x = (e.clientX - displayLeft) / displayWidth;
-    const y = (e.clientY - displayTop) / displayHeight;
+    const dockHeight = Math.min(r.width * sourceHeight * DOCK_SHARE / sourceWidth, r.height * 0.4);
+    const contentHeight = r.height - dockHeight;
+    const x = (e.clientX - r.left) / r.width;
+    const localY = e.clientY - r.top;
+    const y = localY <= contentHeight
+      ? localY / contentHeight * (1 - DOCK_SHARE)
+      : 1 - DOCK_SHARE + (localY - contentHeight) / dockHeight * DOCK_SHARE;
     if (x < 0 || x > 1 || y < 0 || y > 1) return null;
     return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
   }
+
+  function updatePresentationLayout() {
+    const r = streamContainer?.getBoundingClientRect?.();
+    if (!r?.width || !r.height) return;
+    const relay = relayCanvas && !relayCanvas.hidden;
+    const width = (relay ? relayCanvas.width : remoteVideo.videoWidth) || 1280;
+    const height = (relay ? relayCanvas.height : remoteVideo.videoHeight) || 720;
+    const dockHeight = Math.min(r.width * height * DOCK_SHARE / width, r.height * 0.4);
+    streamContainer.style.setProperty('--dock-height', dockHeight + 'px');
+    streamContainer.style.setProperty('--content-frame-height', (r.height - dockHeight) / (1 - DOCK_SHARE) + 'px');
+    streamContainer.style.setProperty('--dock-frame-height', dockHeight / DOCK_SHARE + 'px');
+  }
+  remoteVideo.addEventListener('loadedmetadata', updatePresentationLayout);
+  remoteVideo.addEventListener('resize', updatePresentationLayout);
+  window.addEventListener('resize', updatePresentationLayout);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', updatePresentationLayout);
+  updatePresentationLayout();
 
 
   function concatBytes(parts) {
@@ -868,14 +899,28 @@
     try {
       relayDecoder = new VideoDecoder({
         output: frame => {
-          if (relayCanvas.width !== frame.displayWidth || relayCanvas.height !== frame.displayHeight) {
+          const sizeChanged = relayCanvas.width !== frame.displayWidth || relayCanvas.height !== frame.displayHeight;
+          if (sizeChanged) {
             relayCanvas.width = frame.displayWidth;
             relayCanvas.height = frame.displayHeight;
           }
           relayContext.drawImage(frame, 0, 0, relayCanvas.width, relayCanvas.height);
+          if (relayDockContext) {
+            const dockPixels = Math.round(frame.displayHeight * DOCK_SHARE);
+            if (relayDockCanvas.width !== frame.displayWidth || relayDockCanvas.height !== dockPixels) {
+              relayDockCanvas.width = frame.displayWidth;
+              relayDockCanvas.height = dockPixels;
+            }
+            relayDockContext.drawImage(frame, 0, frame.displayHeight - dockPixels,
+              frame.displayWidth, dockPixels, 0, 0, frame.displayWidth, dockPixels);
+          }
           frame.close();
           remoteVideo.hidden = true;
+          if (dockVideo) dockVideo.hidden = true;
+          if (relayDockCanvas) relayDockCanvas.hidden = false;
+          const layoutChanged = relayCanvas.hidden;
           relayCanvas.hidden = false;
+          if (layoutChanged || sizeChanged) updatePresentationLayout();
           if (!mediaStarted) diagnostics.firstFrameMs = Date.now() - connectionStartedAt;
           mediaStarted = true;
           diagnostics.connectionPath = 'secure-relay';
@@ -969,6 +1014,8 @@
   }
   bindTouchTarget(remoteVideo);
   bindTouchTarget(relayCanvas);
+  bindTouchTarget(dockVideo);
+  bindTouchTarget(relayDockCanvas);
   setInterval(() => {
     if (state !== 'CONNECTED' || diagnostics.connectionPath !== 'secure-relay' || !lastPresentedFrameAt) return;
     // AA may legitimately stop producing frames on an unchanged screen.
@@ -1010,6 +1057,8 @@
     relayHasKeyframe = false;
     lastPresentedFrameAt = 0;
     if (relayCanvas) relayCanvas.hidden = true;
+    if (relayDockCanvas) relayDockCanvas.hidden = true;
+    if (dockVideo) { dockVideo.hidden = false; dockVideo.srcObject = null; }
     remoteVideo.hidden = false;
     if (dc) { try { dc.close(); } catch (_) {} dc = null; }
     if (pc) {
@@ -1018,6 +1067,7 @@
     }
     remoteVideo.onloadeddata = remoteVideo.onplaying = null;
     remoteVideo.srcObject = null;
+    updatePresentationLayout();
     diagnostics.peerConnectionState = 'closed';
     diagnostics.dataChannelState = 'closed';
   }

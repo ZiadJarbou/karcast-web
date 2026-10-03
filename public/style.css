@@ -25,6 +25,7 @@
 html, body {
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   background-color: var(--bg-color);
   color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -33,8 +34,8 @@ html, body {
 
 #app {
   position: relative;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -45,26 +46,49 @@ html, body {
 #stream-container {
   position: absolute;
   inset: 0;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   background: #000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   z-index: 1;
 }
 
-#remoteVideo, #relayCanvas {
-  width: 100vw;
-  height: 100vh;
-  object-fit: contain;
+#content-viewport, #dock-viewport {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+#content-viewport {
+  top: 0;
+  bottom: var(--dock-height, 10vw);
+}
+
+#dock-viewport {
+  bottom: 0;
+  height: var(--dock-height, 10vw);
+}
+
+#remoteVideo, #relayCanvas, #dockVideo, #relayDockCanvas {
+  display: block;
+  width: 100%;
+  object-fit: fill;
   touch-action: none;
   background: #000;
 }
 
-#relayCanvas {
-  object-fit: contain;
-  touch-action: none;
+#remoteVideo, #relayCanvas {
+  height: var(--content-frame-height, calc(121.621622vh - 12.162162vw));
+}
+
+#dockVideo {
+  position: absolute;
+  bottom: 0;
+  height: var(--dock-frame-height, 56.25vw);
+}
+
+#relayDockCanvas {
+  height: 100%;
 }
 
 

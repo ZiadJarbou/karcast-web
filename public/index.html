@@ -7,14 +7,20 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>KarCast</title>
-  <link rel="stylesheet" href="style.css?v=2.8">
+  <link rel="stylesheet" href="style.css?v=2.9">
 </head>
 <body>
   <div id="app">
     <!-- Stream Container & Video element -->
     <div id="stream-container">
-      <video id="remoteVideo" autoplay playsinline muted></video>
-      <canvas id="relayCanvas" width="1280" height="720" hidden></canvas>
+      <div id="content-viewport">
+        <video id="remoteVideo" autoplay playsinline muted></video>
+        <canvas id="relayCanvas" width="1280" height="720" hidden></canvas>
+      </div>
+      <div id="dock-viewport">
+        <video id="dockVideo" autoplay playsinline muted></video>
+        <canvas id="relayDockCanvas" width="1280" height="128" hidden></canvas>
+      </div>
     </div>
 
     <!-- Unobtrusive Connection Pill (Shown when streaming) -->
@@ -144,6 +150,6 @@
     <pre id="metrics-panel" hidden></pre>
   </div>
 
-  <script src="app.js?v=clean-aa-display-20261003"></script>
+  <script src="app.js?v=viewport-fill-20261003"></script>
 </body>
 </html>
