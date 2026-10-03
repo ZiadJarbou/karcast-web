@@ -36,9 +36,19 @@
   const relayContext = relayCanvas ? relayCanvas.getContext('2d', { alpha: false }) : null;
   const relayDockCanvas = document.getElementById('relayDockCanvas');
   const relayDockContext = relayDockCanvas ? relayDockCanvas.getContext('2d', { alpha: false }) : null;
-  // KarCast's verified 720p/256-dpi Android Auto profile has a 128px native dock.
-  // This normalized split also follows resolution changes made by WebRTC.
+  // Older APKs use a 128px dock. New APKs announce their native visible rectangle.
   const DOCK_SHARE = 128 / 720;
+  let videoLayout = null;
+  const dockShare = () => videoLayout ? videoLayout.dockHeight / videoLayout.visibleHeight : DOCK_SHARE;
+  function applyVideoLayout(layout) {
+    if (!layout || !['width','height','left','top','visibleWidth','visibleHeight','dockHeight'].every(k => Number.isInteger(layout[k]))) return;
+    if (layout.width > 3840 || layout.height > 2160 || layout.left < 0 || layout.top !== 0 ||
+        layout.visibleWidth < 320 || layout.visibleHeight < 240 || layout.dockHeight < 32 ||
+        layout.dockHeight > layout.visibleHeight / 3 || layout.left + layout.visibleWidth > layout.width ||
+        layout.visibleHeight !== layout.height || layout.left * 2 + layout.visibleWidth !== layout.width) return;
+    videoLayout = layout;
+    updatePresentationLayout();
+  }
   const metricsPanel = document.getElementById('metrics-panel');
 
   const cardHeading = document.getElementById('card-heading');
@@ -156,7 +166,7 @@
 
   // Diagnostics & Metrics
   const diagnostics = {
-    diagnosticsBuildId: 'raw-relay-aspect-20261003',
+    diagnosticsBuildId: 'compact-native-layout-20261003',
     relayAvailable: RELAY_AVAILABLE,
     connectionPath: 'unknown',
     localCandidateType: 'none',
@@ -655,6 +665,7 @@
       try {
         const message = JSON.parse(event.data);
         if (message.type !== 'media_status') return;
+        applyVideoLayout(message.layout);
         diagnostics.androidAutoState = message.state;
         if (message.sourceFrames > phoneSourceFrames) phoneProgressAt = Date.now();
         phoneSourceFrames = message.sourceFrames;
@@ -922,18 +933,19 @@
     const localY = e.clientY - r.top;
     let y;
     if (localY >= g.top && localY <= g.top + g.contentHeight) {
-      y = (localY - g.top) / g.contentHeight * (1 - DOCK_SHARE);
+      y = (localY - g.top) / g.contentHeight * (1 - dockShare());
     } else if (localY >= r.height - g.dockHeight && localY <= r.height) {
-      y = 1 - DOCK_SHARE + (localY - r.height + g.dockHeight) / g.dockHeight * DOCK_SHARE;
+      y = 1 - dockShare() + (localY - r.height + g.dockHeight) / g.dockHeight * dockShare();
     } else return null;
     if (x < 0 || x > 1 || y < 0 || y > 1) return null;
     return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
   }
 
   function presentationGeometry(r, width, height) {
+    if (videoLayout) { width = videoLayout.visibleWidth; height = videoLayout.visibleHeight; }
     const scale = Math.min(r.width / width, r.height / height);
     const frameHeight = height * scale;
-    const dockHeight = frameHeight * DOCK_SHARE;
+    const dockHeight = frameHeight * dockShare();
     return { width: width * scale, left: (r.width - width * scale) / 2,
       top: (r.height - frameHeight) / 2, frameHeight, dockHeight, contentHeight: frameHeight - dockHeight };
   }
@@ -949,6 +961,7 @@
     streamContainer.style.setProperty('--content-height', g.contentHeight + 'px');
     streamContainer.style.setProperty('--content-top', g.top + 'px');
     streamContainer.style.setProperty('--frame-width', g.width + 'px');
+    streamContainer.style.setProperty('--video-frame-width', (videoLayout ? g.width * videoLayout.width / videoLayout.visibleWidth : g.width) + 'px');
     streamContainer.style.setProperty('--content-frame-height', g.frameHeight + 'px');
     streamContainer.style.setProperty('--dock-frame-height', g.frameHeight + 'px');
   }
@@ -972,20 +985,24 @@
     try {
       relayDecoder = new VideoDecoder({
         output: frame => {
-          const sizeChanged = relayCanvas.width !== frame.displayWidth || relayCanvas.height !== frame.displayHeight;
+          const layout = videoLayout && videoLayout.width === frame.displayWidth && videoLayout.height === frame.displayHeight ? videoLayout : null;
+          const visibleWidth = layout ? layout.visibleWidth : frame.displayWidth;
+          const visibleHeight = layout ? layout.visibleHeight : frame.displayHeight;
+          const cropLeft = layout ? layout.left : 0;
+          const sizeChanged = relayCanvas.width !== visibleWidth || relayCanvas.height !== visibleHeight;
           if (sizeChanged) {
-            relayCanvas.width = frame.displayWidth;
-            relayCanvas.height = frame.displayHeight;
+            relayCanvas.width = visibleWidth;
+            relayCanvas.height = visibleHeight;
           }
-          relayContext.drawImage(frame, 0, 0, relayCanvas.width, relayCanvas.height);
+          relayContext.drawImage(frame, cropLeft, 0, visibleWidth, visibleHeight, 0, 0, visibleWidth, visibleHeight);
           if (relayDockContext) {
-            const dockPixels = Math.round(frame.displayHeight * DOCK_SHARE);
-            if (relayDockCanvas.width !== frame.displayWidth || relayDockCanvas.height !== dockPixels) {
-              relayDockCanvas.width = frame.displayWidth;
+            const dockPixels = layout ? layout.dockHeight : Math.round(frame.displayHeight * DOCK_SHARE);
+            if (relayDockCanvas.width !== visibleWidth || relayDockCanvas.height !== dockPixels) {
+              relayDockCanvas.width = visibleWidth;
               relayDockCanvas.height = dockPixels;
             }
-            relayDockContext.drawImage(frame, 0, frame.displayHeight - dockPixels,
-              frame.displayWidth, dockPixels, 0, 0, frame.displayWidth, dockPixels);
+            relayDockContext.drawImage(frame, cropLeft, visibleHeight - dockPixels,
+              visibleWidth, dockPixels, 0, 0, visibleWidth, dockPixels);
           }
           frame.close();
           remoteVideo.hidden = true;
@@ -1055,6 +1072,10 @@
     relayReceivedAt = Date.now();
     const flags = bytes[3];
     const data = bytes.slice(12);
+    if (flags & 4) {
+      if (data.length <= 512) try { applyVideoLayout(JSON.parse(String.fromCharCode(...data))); } catch (_) {}
+      return;
+    }
     if (flags & 1) {
       relayConfig = [data];
       return;
@@ -1135,6 +1156,7 @@
 
   // 7. Cleanup
   function cleanupWebRTC() {
+    videoLayout = null;
     rawFrame = null;
     if (videoChannel) { videoChannel.onclose = videoChannel.onmessage = null; try { videoChannel.close(); } catch (_) {} videoChannel = null; }
     ++renderGeneration;

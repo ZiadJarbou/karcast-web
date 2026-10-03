@@ -82,6 +82,16 @@ html, body {
   height: var(--content-frame-height, calc(121.621622vh - 12.162162vw));
 }
 
+#remoteVideo, #dockVideo {
+  width: var(--video-frame-width, 100%);
+}
+
+#remoteVideo {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
 #dockVideo {
   position: absolute;
   bottom: 0;
