@@ -55,7 +55,7 @@ class Peer {
   getStats() { return Promise.resolve(this.stats || new Map()); }
   close() { this.closed = true; }
 }
-const window = { location: { search: '?pair_code=123456' }, addEventListener() {} };
+const window = { location: { search: '?pair_code=123456' }, addEventListener() {}, VideoDecoder: class {}, EncodedVideoChunk: class {} };
 vm.runInNewContext(fs.readFileSync('public/app.js', 'utf8'), {
   window, document: { getElementById: node }, location: { protocol: 'https:', host: 'app.karcast.app' },
   URLSearchParams, WebSocket: Socket, RTCPeerConnection: Peer, HTMLMediaElement: { HAVE_CURRENT_DATA: 2 }, Date: TestDate,
@@ -136,6 +136,7 @@ const runReconnect = () => {
   assert(next.channel.sent.some(m => m.type === 'request_keyframe'), 'A moving source with a stuck decoder requests recovery');
   assert.equal(hooks.getUIState(), 'CONNECTED', 'Recovery gets a grace period after a static screen');
   clockMs += 12000;
+  next.stats = new Map([['video', { type: 'inbound-rtp', kind: 'video', framesDecoded: 5, bytesReceived: 2000 }]]);
   next.channel.onmessage({ data: JSON.stringify({ type: 'media_status', state: 'projecting', sourceFrames: 200 }) });
   await healthCheck();
   assert.equal(hooks.getUIState(), 'CONNECTED', 'Persistent stalls preserve the peer');
@@ -168,6 +169,20 @@ const runReconnect = () => {
   clockMs += 500;
   await presentationHealth();
   assert.equal(hooks.getDiagnostics().presentationQuietMs, 500);
+  // Transport starvation differs from stalled presentation: the phone keeps
+  // reporting new AA frames, but both RTP bytes and decoded frames stop.
+  clockMs += 2100;
+  presentationPeer.channel.onmessage({ data: JSON.stringify({ type: 'media_status', state: 'projecting', sourceFrames: 1000 }) });
+  await presentationHealth();
+  assert.equal(presentationPeer.closed, undefined, 'Brief starvation first requests a refresh');
+  const bindingSocket = sockets.at(-1);
+  clockMs += 9000;
+  presentationPeer.channel.onmessage({ data: JSON.stringify({ type: 'media_status', state: 'projecting', sourceFrames: 1200 }) });
+  await presentationHealth();
+  assert.equal(presentationPeer.closed, true, 'Sustained transport starvation falls back to secure relay');
+  assert.equal(sockets.at(-1), bindingSocket, 'Fallback preserves the pairing socket');
+  assert.equal(bindingSocket.readyState, Socket.OPEN);
+  assert(bindingSocket.sent.some(m => m.type === 'relay_start'), 'Fallback asks the same phone for original H264 relay');
   hooks.cleanupWebRTC();
   presentedCallback(); // Stale callbacks must not reschedule against a closed peer.
   console.log('PASS: session expiry, early ICE, first-frame refresh, signaling recovery, and phone restart');

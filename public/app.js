@@ -825,6 +825,14 @@
           requestVideoRefresh();
           remoteVideo.play().catch(() => {});
         }
+        // A live AA source with no arriving RTP is a sender/transport stall,
+        // not a static map or a video-element presentation stall. Give the
+        // lightweight refresh time to work, then replace only the media path.
+        if (stalledSince && now - stalledSince >= 6000 &&
+            receivedAt > 0 && now - receivedAt >= 8000 && now - decodedAt >= 8000 &&
+            phoneProgressAt > 0 && now - phoneProgressAt < 3000) {
+          if (tryRelayFallback('Android Auto is producing frames but direct video stopped arriving')) return;
+        }
         // Keyframe recovery preserves PeerConnection and decoder state.
         renderDiagnostics();
       } catch (_) {} finally { checking = false; }
