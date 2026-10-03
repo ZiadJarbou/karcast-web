@@ -60,8 +60,8 @@ html, body {
 }
 
 #content-viewport {
-  top: 0;
-  bottom: var(--dock-height, 10vw);
+  top: var(--content-top, 0px);
+  height: var(--content-height, calc(100% - 10vw));
 }
 
 #dock-viewport {
@@ -71,7 +71,8 @@ html, body {
 
 #remoteVideo, #relayCanvas, #dockVideo, #relayDockCanvas {
   display: block;
-  width: 100%;
+  width: var(--frame-width, 100%);
+  margin-inline: auto;
   object-fit: fill;
   touch-action: none;
   background: #000;
@@ -84,6 +85,8 @@ html, body {
 #dockVideo {
   position: absolute;
   bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
   height: var(--dock-frame-height, 56.25vw);
 }
 

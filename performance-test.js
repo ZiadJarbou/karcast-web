@@ -55,7 +55,7 @@ class Peer {
   getStats() { return Promise.resolve(this.stats || new Map()); }
   close() { this.closed = true; }
 }
-const window = { location: { search: '?pair_code=123456' }, addEventListener() {}, VideoDecoder: class {}, EncodedVideoChunk: class {} };
+const window = { location: { search: '?transport=auto&pair_code=123456' }, addEventListener() {}, VideoDecoder: class {}, EncodedVideoChunk: class {} };
 vm.runInNewContext(fs.readFileSync('public/app.js', 'utf8'), {
   window, document: { getElementById: node }, location: { protocol: 'https:', host: 'app.karcast.app' },
   URLSearchParams, WebSocket: Socket, RTCPeerConnection: Peer, HTMLMediaElement: { HAVE_CURRENT_DATA: 2 }, Date: TestDate,

@@ -4,7 +4,7 @@
  *
  * Public entry point for Tesla and vehicle browsers.
  * Bootstraps WebRTC signaling via wss://app.karcast.app/ws.
- * Video streaming and touch controls pass 100% LOCALLY over hotspot P2P WebRTC.
+ * Original H264 uses a reliable local data channel; secure relay is a fallback.
  */
 
 (function () {
@@ -19,6 +19,7 @@
   const requestedTransport = (urlParams.get('transport') || '').toLowerCase();
   const RELAY_AVAILABLE = !!window.VideoDecoder && !!window.EncodedVideoChunk;
   let useRelay = RELAY_AVAILABLE && requestedTransport === 'relay';
+  const USE_RAW_VIDEO = RELAY_AVAILABLE && !['relay', 'webrtc', 'auto'].includes(requestedTransport);
   const AUTO_RELAY = RELAY_AVAILABLE && requestedTransport !== 'webrtc';
   const DIRECT_START_TIMEOUT_MS = 15000;
 
@@ -101,6 +102,8 @@
   let pressedPointer = null;
   let lastPoint = { x: 0, y: 0 };
   let relayDecoder = null;
+  let videoChannel = null;
+  let rawFrame = null;
   let relayDecoderFailed = false;
   let transportFallbackTimer = null;
   let relayConfig = [];
@@ -153,7 +156,7 @@
 
   // Diagnostics & Metrics
   const diagnostics = {
-    diagnosticsBuildId: 'tesla-auto-relay-20261002',
+    diagnosticsBuildId: 'raw-relay-aspect-20261003',
     relayAvailable: RELAY_AVAILABLE,
     connectionPath: 'unknown',
     localCandidateType: 'none',
@@ -627,6 +630,12 @@
       if (pc === peer && !mediaStarted) tryRelayFallback('No direct video frame after 15 seconds');
     }, DIRECT_START_TIMEOUT_MS);
     dc = pc.createDataChannel('tesla-touch', { ordered: true });
+    if (USE_RAW_VIDEO) {
+      videoChannel = pc.createDataChannel('karcast-video', { ordered: true });
+      videoChannel.binaryType = 'arraybuffer';
+      videoChannel.onmessage = event => handleRawFragment(event.data);
+      videoChannel.onclose = () => { if (pc === peer && mediaStarted) tryRelayFallback('Reliable video channel closed'); };
+    }
     dc.onopen = () => {
       if (pc !== peer) return;
       diagnostics.dataChannelState = 'open';
@@ -653,8 +662,8 @@
     };
     startMediaHealthChecks(peer);
 
-    const videoTransceiver = pc.addTransceiver('video', { direction: 'recvonly' });
-    if ('jitterBufferTarget' in videoTransceiver.receiver) {
+    const videoTransceiver = USE_RAW_VIDEO ? null : pc.addTransceiver('video', { direction: 'recvonly' });
+    if (videoTransceiver && 'jitterBufferTarget' in videoTransceiver.receiver) {
       try { videoTransceiver.receiver.jitterBufferTarget = 0; } catch (_) {}
     }
 
@@ -908,15 +917,25 @@
     const sourceHeight = target === relayCanvas ? relayCanvas.height : remoteVideo.videoHeight;
     if (!sourceWidth || !sourceHeight || !r?.width || !r.height) return null;
 
-    const dockHeight = Math.min(r.width * sourceHeight * DOCK_SHARE / sourceWidth, r.height * 0.4);
-    const contentHeight = r.height - dockHeight;
-    const x = (e.clientX - r.left) / r.width;
+    const g = presentationGeometry(r, sourceWidth, sourceHeight);
+    const x = (e.clientX - r.left - g.left) / g.width;
     const localY = e.clientY - r.top;
-    const y = localY <= contentHeight
-      ? localY / contentHeight * (1 - DOCK_SHARE)
-      : 1 - DOCK_SHARE + (localY - contentHeight) / dockHeight * DOCK_SHARE;
+    let y;
+    if (localY >= g.top && localY <= g.top + g.contentHeight) {
+      y = (localY - g.top) / g.contentHeight * (1 - DOCK_SHARE);
+    } else if (localY >= r.height - g.dockHeight && localY <= r.height) {
+      y = 1 - DOCK_SHARE + (localY - r.height + g.dockHeight) / g.dockHeight * DOCK_SHARE;
+    } else return null;
     if (x < 0 || x > 1 || y < 0 || y > 1) return null;
     return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
+  }
+
+  function presentationGeometry(r, width, height) {
+    const scale = Math.min(r.width / width, r.height / height);
+    const frameHeight = height * scale;
+    const dockHeight = frameHeight * DOCK_SHARE;
+    return { width: width * scale, left: (r.width - width * scale) / 2,
+      top: (r.height - frameHeight) / 2, frameHeight, dockHeight, contentHeight: frameHeight - dockHeight };
   }
 
   function updatePresentationLayout() {
@@ -925,10 +944,13 @@
     const relay = relayCanvas && !relayCanvas.hidden;
     const width = (relay ? relayCanvas.width : remoteVideo.videoWidth) || 1280;
     const height = (relay ? relayCanvas.height : remoteVideo.videoHeight) || 720;
-    const dockHeight = Math.min(r.width * height * DOCK_SHARE / width, r.height * 0.4);
-    streamContainer.style.setProperty('--dock-height', dockHeight + 'px');
-    streamContainer.style.setProperty('--content-frame-height', (r.height - dockHeight) / (1 - DOCK_SHARE) + 'px');
-    streamContainer.style.setProperty('--dock-frame-height', dockHeight / DOCK_SHARE + 'px');
+    const g = presentationGeometry(r, width, height);
+    streamContainer.style.setProperty('--dock-height', g.dockHeight + 'px');
+    streamContainer.style.setProperty('--content-height', g.contentHeight + 'px');
+    streamContainer.style.setProperty('--content-top', g.top + 'px');
+    streamContainer.style.setProperty('--frame-width', g.width + 'px');
+    streamContainer.style.setProperty('--content-frame-height', g.frameHeight + 'px');
+    streamContainer.style.setProperty('--dock-frame-height', g.frameHeight + 'px');
   }
   remoteVideo.addEventListener('loadedmetadata', updatePresentationLayout);
   remoteVideo.addEventListener('resize', updatePresentationLayout);
@@ -974,8 +996,8 @@
           if (layoutChanged || sizeChanged) updatePresentationLayout();
           if (!mediaStarted) diagnostics.firstFrameMs = Date.now() - connectionStartedAt;
           mediaStarted = true;
-          diagnostics.connectionPath = 'secure-relay';
-          diagnostics.protocol = 'wss';
+          diagnostics.connectionPath = useRelay ? 'secure-relay' : 'local-raw';
+          diagnostics.protocol = useRelay ? 'wss' : 'sctp';
           diagnostics.presentedFrames++;
           lastPresentedFrameAt = Date.now();
           setProgressMilestone(100);
@@ -1003,8 +1025,31 @@
     setUIState('CONNECTION_FAILED', 'This browser could not decode Android Auto video. Please update the vehicle browser and reload.', true);
   }
 
-  function handleRelayFrame(payload) {
-    if (!useRelay) return;
+  function handleRawFragment(payload) {
+    if (!USE_RAW_VIDEO || useRelay || !(payload instanceof ArrayBuffer)) return;
+    const p = new Uint8Array(payload);
+    if (p.length < 25 || p[0] !== 75 || p[1] !== 67 || p[2] !== 2) return;
+    const v = new DataView(payload);
+    const id = v.getUint32(4), part = v.getUint16(8), count = v.getUint16(10), size = v.getUint32(20);
+    if (!size || size > 2 * 1024 * 1024 || !count || count > 132 || part >= count) return;
+    if (part === 0) {
+      rawFrame = { id, count, size, next: 0, offset: 12, bytes: new Uint8Array(12 + size) };
+      rawFrame.bytes.set([75, 67, 1, p[3]]);
+      rawFrame.bytes.set(p.subarray(12, 20), 4);
+    }
+    if (!rawFrame || rawFrame.id !== id || rawFrame.count !== count || rawFrame.size !== size || rawFrame.next !== part ||
+        rawFrame.offset + p.length - 24 > rawFrame.bytes.length) { rawFrame = null; requestVideoRefresh(); return; }
+    rawFrame.bytes.set(p.subarray(24), rawFrame.offset);
+    rawFrame.offset += p.length - 24; rawFrame.next++;
+    if (rawFrame.next === count) {
+      const frame = rawFrame; rawFrame = null;
+      if (frame.offset === frame.bytes.length) handleRelayFrame(frame.bytes.buffer, true);
+      else requestVideoRefresh();
+    }
+  }
+
+  function handleRelayFrame(payload, raw = false) {
+    if (!useRelay && !raw) return;
     const bytes = payload instanceof ArrayBuffer ? new Uint8Array(payload) : null;
     if (!bytes || bytes.byteLength < 13 || bytes[0] !== 75 || bytes[1] !== 67 || bytes[2] !== 1) return;
     relayReceivedAt = Date.now();
@@ -1069,10 +1114,11 @@
   bindTouchTarget(dockVideo);
   bindTouchTarget(relayDockCanvas);
   setInterval(() => {
-    if (state !== 'CONNECTED' || diagnostics.connectionPath !== 'secure-relay' || !lastPresentedFrameAt) return;
+    if (state !== 'CONNECTED' || !['secure-relay', 'local-raw'].includes(diagnostics.connectionPath) || !lastPresentedFrameAt) return;
     // AA may legitimately stop producing frames on an unchanged screen.
     // A stalled decoder has pending work; silence alone is not a transport failure.
-    if (Date.now() - lastPresentedFrameAt <= 2000 || Date.now() - relayReceivedAt > 2000 || document.hidden) return;
+    if (Date.now() - lastPresentedFrameAt <= 2000 || document.hidden) return;
+    if (Date.now() - relayReceivedAt > 2000 && Date.now() - phoneProgressAt > 3000) return;
     if (Date.now() - relayRefreshAt < 2000) return;
     relayRefreshAt = Date.now();
     diagnostics.relayStalls = (diagnostics.relayStalls || 0) + 1;
@@ -1089,6 +1135,8 @@
 
   // 7. Cleanup
   function cleanupWebRTC() {
+    rawFrame = null;
+    if (videoChannel) { videoChannel.onclose = videoChannel.onmessage = null; try { videoChannel.close(); } catch (_) {} videoChannel = null; }
     ++renderGeneration;
     if (renderedCallback !== null) remoteVideo.cancelVideoFrameCallback?.(renderedCallback);
     renderedCallback = null;
