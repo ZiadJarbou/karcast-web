@@ -111,6 +111,16 @@ const runReconnect = () => {
   assert.equal(hooks.getDiagnostics().signalingState, 'open');
   assert([...timers.values()].some(t => t.ms === 10000), 'Resumed signaling has a heartbeat');
 
+  peer.channel.onmessage({ data: JSON.stringify({ type: 'media_status', state: 'projecting', sourceFrames: 100 }) });
+  resumedSocket.onclose({ code: 1006, reason: 'phone registration renewed' });
+  runReconnect(); sockets.at(-1).onopen();
+  message({ type: 'joined', sessionId: 'renewed-same-phone' });
+  message({ type: 'peer_ready', role: 'phone' }); await flush();
+  assert.equal(peers.length, 1, 'A renewed session ID with live phone status preserves media');
+  assert.equal(peer.closed, undefined);
+  assert.equal(hooks.getUIState(), 'CONNECTED');
+  clockMs += 7000; // The old phone is no longer reporting status after a real restart.
+
   message({ type: 'closed', reason: 'Phone disconnected from signaling relay' });
   assert.equal(peer.closed, undefined, 'An internet interruption need not stop local video');
   runReconnect();

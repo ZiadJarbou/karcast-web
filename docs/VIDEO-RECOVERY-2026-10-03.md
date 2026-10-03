@@ -21,6 +21,11 @@ starvation and at least three newer phone frames before requesting recovery.
 Signaling heartbeats run every ten seconds, and diagnostics distinguish video
 recoveries, pending pictures, queue bytes, and signaling reconnects.
 
+A renewed signaling session ID keeps the live peer if the touch channel has
+received phone status within six seconds. The persistent pairing token still
+binds the browser to the same phone. If the old phone is no longer reporting
+status, the replacement session rebuilds media and gets a fresh startup timer.
+
 The Android APK, original-H264 transport, native negotiated layout and touch
 mapping remain unchanged. The prior fast baseline tag remains available.
 

@@ -141,6 +141,7 @@
   let renderGeneration = 0;
   let phoneProgressAt = 0;
   let phoneSourceFrames = 0;
+  let phoneStatusAt = 0;
   // AA can take about a minute to send another IDR after a browser joins late.
   const CONNECTION_TIMEOUT_MS = 90000;
 
@@ -176,7 +177,7 @@
 
   // Diagnostics & Metrics
   const diagnostics = {
-    diagnosticsBuildId: 'bounded-video-recovery-20261003',
+    diagnosticsBuildId: 'bounded-video-recovery-20261003-v2',
     recoveryRequests: 0,
     relayStalls: 0,
     signalingReconnects: 0,
@@ -504,12 +505,20 @@
     switch (msg.type) {
       case 'joined':
           savePairToken(msg.pair_token);
-        if (signalingOnlyReconnect && sessionId === msg.sessionId) {
+        // A renewed signaling registration can assign the SAME paired phone a
+        // new session ID. Recent status on the live peer proves media survived.
+        const livePhone = dc?.readyState === 'open' && phoneStatusAt > 0 &&
+          Date.now() - phoneStatusAt <= 6000;
+        if (signalingOnlyReconnect && (sessionId === msg.sessionId || livePhone)) {
+          sessionId = msg.sessionId;
           signalingOnlyReconnect = false;
           connectAttempt = 0;
           break;
         }
-        if (signalingOnlyReconnect) cleanupWebRTC();
+        if (signalingOnlyReconnect) {
+          cleanupWebRTC();
+          connectionStartedAt = Date.now();
+        }
         signalingOnlyReconnect = false;
         sessionId = msg.sessionId;
         setProgressMilestone(30, 40);
@@ -679,6 +688,7 @@
       try {
         const message = JSON.parse(event.data);
         if (message.type !== 'media_status') return;
+        phoneStatusAt = Date.now();
         applyVideoLayout(message.layout);
         diagnostics.androidAutoState = message.state;
         if (message.sourceFrames > phoneSourceFrames) phoneProgressAt = Date.now();
@@ -1274,7 +1284,7 @@
     pendingCandidates = [];
     clearInterval(mediaHealthTimer);
     mediaHealthTimer = null;
-    phoneProgressAt = phoneSourceFrames = 0;
+    phoneProgressAt = phoneSourceFrames = phoneStatusAt = 0;
     clearConnectionWatchdog();
     clearTimeout(disconnectGraceTimer);
     disconnectGraceTimer = null;
