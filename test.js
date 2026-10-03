@@ -244,7 +244,7 @@ function waitBinary(client, timeoutMs = 3000) {
     console.log('PASS 6: Browser signaling disconnect preserves media and allows rejoin');
   }
 
-  // Test 7: A vehicle auto-join takes over a phone session held by another browser
+  // Test 7: A vehicle token rejoin takes over a phone session held by another browser
   {
     const phone = await connectClient(port, '10.3.0.1');
     phone.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.REGISTER }));
@@ -252,10 +252,10 @@ function waitBinary(client, timeoutMs = 3000) {
 
     const desktop = await connectClient(port, '10.3.0.2');
     desktop.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.JOIN, pairingCode: reg.pairingCode }));
-    await waitMessage(desktop, m => m.type === MSG_TYPES.JOINED);
+    const paired = await waitMessage(desktop, m => m.type === MSG_TYPES.JOINED);
 
     const vehicle = await connectClient(port, '10.3.0.3');
-    vehicle.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.JOIN, pairingCode: 'auto' }));
+    vehicle.send(JSON.stringify({ version: PROTOCOL_VERSION, type: MSG_TYPES.JOIN, pair_token: paired.pair_token }));
     const joined = await waitMessage(vehicle, m => m.type === MSG_TYPES.JOINED);
     const replaced = await waitMessage(desktop, m => m.type === MSG_TYPES.CLOSED);
 
@@ -267,7 +267,7 @@ function waitBinary(client, timeoutMs = 3000) {
     vehicle.close();
     desktop.close();
     phone.close();
-    console.log('PASS 7: Vehicle auto-join takes over an existing desktop browser session');
+    console.log('PASS 7: Vehicle token rejoin takes over an existing desktop browser session');
   }
 
   // Test 8: Concurrency Load Test (100 Simultaneous Sessions)

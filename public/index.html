@@ -45,6 +45,10 @@
             <div class="eyebrow">KARCAST</div>
             <h1 id="card-heading" class="brand-title">Connect your vehicle</h1>
             <p id="card-subtitle" class="subtitle">Follow these steps on your phone.</p>
+        <form id="pair-form" hidden style="margin:16px 0">
+          <input id="pair-code" aria-label="Phone pairing code" inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" placeholder="6-digit pairing code" required style="padding:12px;border-radius:8px;width:180px;background:#18202d;color:white;border:1px solid #53617a">
+          <button type="submit" style="padding:12px;border-radius:8px;background:#38bdf8;border:0;color:#07111d">Pair phone</button>
+        </form>
           </div>
         </div>
 
@@ -150,6 +154,6 @@
     <pre id="metrics-panel" hidden></pre>
   </div>
 
-  <script src="app.js?v=viewport-fill-20261003"></script>
+  <script src="app.js?v=passthrough-pairing-20261003"></script>
 </body>
 </html>

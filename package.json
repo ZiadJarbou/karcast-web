@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test.js && node relay-test.js && node performance-test.js && node tesla-test.js"
+    "test": "node test.js && node relay-test.js && node performance-test.js && node tesla-test.js && node pairing-test.js && node browser-pairing-test.js"
   },
   "keywords": [
     "karcast",

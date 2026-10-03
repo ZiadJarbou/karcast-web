@@ -43,7 +43,7 @@ class Decoder {
   close() {}
   decode() {}
 }
-const window = { VideoDecoder: Decoder, EncodedVideoChunk: class {}, location: { search: '?transport=relay' }, addEventListener() {} };
+const window = { VideoDecoder: Decoder, EncodedVideoChunk: class {}, location: { search: '?transport=relay&pair_code=123456' }, addEventListener() {} };
 const context = { window, document: { getElementById: node }, location: { protocol: 'https:', host: 'app.karcast.app' },
   URLSearchParams, WebSocket: Socket, VideoDecoder: Decoder, Uint8Array, ArrayBuffer, DataView, Date: TestDate,
   setTimeout: (fn, ms) => { timers.push(fn); delays.push(ms); return timers.length; }, clearTimeout() {},
@@ -66,7 +66,7 @@ output({ displayWidth: 1280, displayHeight: 720, close() {} });
 assert.equal(timers.length, afterFirstFrame, 'Frames must not repeatedly schedule overlay dismissal');
 assert.equal(window.__KARCAST_TEST_HOOKS__.getUIState(), 'CONNECTED');
 clockMs += 60000;
-intervals.find(timer => timer.ms === 3000).fn();
+intervals.find(timer => timer.ms === 1000).fn();
 assert.equal(window.__KARCAST_TEST_HOOKS__.getUIState(), 'CONNECTED', 'An unchanged AA screen must not cause reconnect');
 window.__KARCAST_TEST_HOOKS__.cleanupWebRTC();
 assert.equal(node('relayCanvas').hidden, true);

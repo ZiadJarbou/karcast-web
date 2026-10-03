@@ -44,7 +44,7 @@ function client(search = '', options = {}) {
     close() { this.closed = true; }
   }
   class Chunk {}
-  const window = { VideoDecoder: Decoder, EncodedVideoChunk: Chunk, location: { search }, addEventListener() {} };
+  const window = { VideoDecoder: Decoder, EncodedVideoChunk: Chunk, location: { search: search + (search ? '&' : '?') + 'pair_code=123456' }, addEventListener() {} };
   if (options.noRelay) { delete window.VideoDecoder; delete window.EncodedVideoChunk; }
   vm.runInNewContext(source, { window, document: { getElementById: node },
     location: { protocol: 'https:', host: 'app.karcast.app' }, URLSearchParams,

@@ -55,7 +55,7 @@ class Peer {
   getStats() { return Promise.resolve(this.stats || new Map()); }
   close() { this.closed = true; }
 }
-const window = { location: { search: '' }, addEventListener() {} };
+const window = { location: { search: '?pair_code=123456' }, addEventListener() {} };
 vm.runInNewContext(fs.readFileSync('public/app.js', 'utf8'), {
   window, document: { getElementById: node }, location: { protocol: 'https:', host: 'app.karcast.app' },
   URLSearchParams, WebSocket: Socket, RTCPeerConnection: Peer, HTMLMediaElement: { HAVE_CURRENT_DATA: 2 }, Date: TestDate,
@@ -87,7 +87,7 @@ const runReconnect = () => {
   peer.onconnectionstatechange();
   assert([...timers.values()].some(t => t.ms === 90000), 'Connected transport still needs a first-frame deadline');
   peer.channel.onopen();
-  assert(peer.channel.sent.some(m => m.type === 'keyframe'), 'Joining a static screen requests a current picture');
+  assert(peer.channel.sent.some(m => m.type === 'request_keyframe'), 'Joining a static screen requests a current picture');
   peer.ontrack({ track: {} });
   node('remoteVideo').onplaying();
   assert.equal(hooks.getUIState(), 'CONNECTED');
@@ -126,37 +126,49 @@ const runReconnect = () => {
   next.ontrack({ track: {} });
   node('remoteVideo').onplaying();
   next.stats = new Map([['video', { type: 'inbound-rtp', kind: 'video', framesDecoded: 5, bytesReceived: 1000 }]]);
-  const healthCheck = [...timers.values()].find(t => t.ms === 1000).fn;
+  const healthCheck = [...timers.values()].filter(t => t.ms === 1000).at(-1).fn;
   await healthCheck();
   clockMs += 60000;
   await healthCheck();
   assert.equal(hooks.getUIState(), 'CONNECTED', 'Static video must not trigger the WebRTC watchdog');
   next.channel.onmessage({ data: JSON.stringify({ type: 'media_status', state: 'projecting', sourceFrames: 100 }) });
   await healthCheck();
-  assert(next.channel.sent.some(m => m.type === 'keyframe'), 'A moving source with a stuck decoder requests recovery');
+  assert(next.channel.sent.some(m => m.type === 'request_keyframe'), 'A moving source with a stuck decoder requests recovery');
   assert.equal(hooks.getUIState(), 'CONNECTED', 'Recovery gets a grace period after a static screen');
   clockMs += 12000;
   next.channel.onmessage({ data: JSON.stringify({ type: 'media_status', state: 'projecting', sourceFrames: 200 }) });
   await healthCheck();
-  assert.equal(hooks.getUIState(), 'RECONNECTING');
-  runReconnect();
-  sockets.at(-1).onopen();
+  assert.equal(hooks.getUIState(), 'CONNECTED', 'Persistent stalls preserve the peer');
+  assert.equal(next.closed, undefined);
+  const videoNode = node('remoteVideo');
+  let presentedCallback;
+  videoNode.requestVideoFrameCallback = cb => { presentedCallback = cb; return 1; };
+  videoNode.cancelVideoFrameCallback = () => {};
+  videoNode.getVideoPlaybackQuality = () => ({ totalVideoFrames: 10, droppedVideoFrames: 0 });
+  hooks.cleanupWebRTC();
+  hooks.connectAndJoin(); sockets.at(-1).onopen();
   message({ type: 'joined', sessionId: 'restarted-phone' });
-  message({ type: 'peer_ready', role: 'phone' });
-  await flush();
+  message({ type: 'peer_ready', role: 'phone' }); await flush();
   const presentationPeer = peers.at(-1);
   presentationPeer.connectionState = presentationPeer.iceConnectionState = 'connected';
   presentationPeer.onconnectionstatechange();
   presentationPeer.ontrack({ track: {} });
-  const videoNode = node('remoteVideo');
-  videoNode.getVideoPlaybackQuality = () => ({ totalVideoFrames: 10, droppedVideoFrames: 0 });
   videoNode.onplaying();
-  const presentationHealth = [...timers.values()].find(t => t.ms === 1000).fn;
-  for (const [advanceMs, frames] of [[0, 10], [6000, 20], [12000, 30]]) {
+  const presentationHealth = [...timers.values()].filter(t => t.ms === 1000).at(-1).fn;
+  const requestsBefore = presentationPeer.channel.sent.filter(m => m.type === 'request_keyframe').length;
+  for (const [advanceMs, frames] of [[0, 10], [2100, 20]]) {
     clockMs += advanceMs;
     presentationPeer.stats = new Map([['video', { type: 'inbound-rtp', kind: 'video', framesDecoded: frames, bytesReceived: frames * 100 }]]);
     await presentationHealth();
   }
-  assert.equal(hooks.getUIState(), 'RECONNECTING', 'Presentation stalls recover even while decoding continues');
+  assert.equal(hooks.getUIState(), 'CONNECTED', 'Presentation stalls preserve the transport');
+  assert(presentationPeer.channel.sent.filter(m => m.type === 'request_keyframe').length > requestsBefore, 'Incoming packets with no rendered callback request a keyframe after 2 seconds');
+  assert.equal(presentationPeer.closed, undefined);
+  presentedCallback();
+  clockMs += 500;
+  await presentationHealth();
+  assert.equal(hooks.getDiagnostics().presentationQuietMs, 500);
+  hooks.cleanupWebRTC();
+  presentedCallback(); // Stale callbacks must not reschedule against a closed peer.
   console.log('PASS: session expiry, early ICE, first-frame refresh, signaling recovery, and phone restart');
 })().catch(error => { console.error(error); process.exitCode = 1; });

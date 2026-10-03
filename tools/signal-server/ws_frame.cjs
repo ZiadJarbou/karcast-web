@@ -33,17 +33,22 @@ class WsSocket extends EventEmitter {
       return null;
     }
 
+    const protocols = (req.headers['sec-websocket-protocol'] || '').split(',').map(s => s.trim());
+    const pairProtocol = protocols.find(s => /^pair_token\.[a-f0-9]{64}$/.test(s));
     const digest = crypto.createHash('sha1').update(key + GUID).digest('base64');
     const responseHeaders = [
       'HTTP/1.1 101 Switching Protocols',
       'Upgrade: websocket',
       'Connection: Upgrade',
       `Sec-WebSocket-Accept: ${digest}`,
+      ...(protocols.includes('karcast-v1') ? ['Sec-WebSocket-Protocol: karcast-v1'] : []),
       '\r\n'
     ].join('\r\n');
 
     socket.write(responseHeaders);
-    return new WsSocket(socket);
+    const ws = new WsSocket(socket);
+    ws.pairToken = pairProtocol ? pairProtocol.slice(11) : '';
+    return ws;
   }
 
   send(text) {

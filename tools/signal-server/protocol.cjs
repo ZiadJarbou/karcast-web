@@ -7,7 +7,7 @@
  * session discovery, pairing, and WebRTC SDP/ICE exchange between
  * the Android Phone app and the vehicle browser (app.karcast.app).
  *
- * MEDIA AND TOUCH TRAFFIC ARE NEVER PROXIED THROUGH THIS SERVICE.
+ * Direct media uses local WebRTC; the authenticated WSS fallback relays original H264 and touch.
  */
 
 const PROTOCOL_VERSION = '1.0';
@@ -27,6 +27,7 @@ const MSG_TYPES = {
   READY: 'ready',
   CLOSE: 'close',
   HEARTBEAT: 'heartbeat',
+  REQUEST_KEYFRAME: 'request_keyframe',
   RELAY_START: 'relay_start',
   RELAY_TOUCH: 'relay_touch',
   RELAY_STATUS: 'relay_status',

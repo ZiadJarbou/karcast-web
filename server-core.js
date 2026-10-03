@@ -196,6 +196,7 @@ class UnifiedAppServer {
           this.handleClose(ws, msg);
           break;
 
+        case MSG_TYPES.REQUEST_KEYFRAME:
         case MSG_TYPES.RELAY_START:
         case MSG_TYPES.RELAY_TOUCH:
         case MSG_TYPES.RELAY_STATUS:
@@ -225,7 +226,7 @@ class UnifiedAppServer {
   }
 
   handleRegister(ws, msg, clientIp) {
-    const session = this.sessionStore.registerPhoneSession(ws, clientIp);
+    const session = this.sessionStore.registerPhoneSession(ws, clientIp, msg.phone_token || '');
     console.log(`[REGISTER] instanceId=${SERVER_INSTANCE_ID} codeHash=${codeFingerprint(session.pairingCode)} sess=${session.sessionId.slice(-6)} activeSessions=${this.sessionStore.sessionsById.size}`);
     ws.send(createMessage(MSG_TYPES.REGISTERED, {
       sessionId: session.sessionId,
@@ -237,7 +238,11 @@ class UnifiedAppServer {
 
   handleJoin(ws, msg, clientIp) {
     const pairingCode = String(msg.pairingCode || '').trim();
-    if (!pairingCode) {
+    const pairToken = ws.pairToken || msg.pair_token || '';
+    if (ws.pairToken && msg.pair_token && ws.pairToken !== msg.pair_token) {
+      throw { code: ERROR_CODES.UNAUTHORIZED, message: 'Pairing token mismatch' };
+    }
+    if (!pairingCode && !pairToken) {
       ws.send(createErrorMessage(ERROR_CODES.PAIRING_CODE_INVALID, 'Missing pairing code', msg.messageId));
       return;
     }
@@ -247,7 +252,7 @@ class UnifiedAppServer {
 
     let session;
     try {
-      session = this.sessionStore.joinBrowserSession(ws, pairingCode, clientIp);
+      session = this.sessionStore.joinBrowserSession(ws, pairingCode, clientIp, pairToken);
     } catch (err) {
       this.sessionStore.recordFailedJoin(pairingCode);
       ws.send(createErrorMessage(err.code || ERROR_CODES.PAIRING_CODE_INVALID, err.message || 'Failed to join session', msg.messageId));
@@ -256,6 +261,7 @@ class UnifiedAppServer {
 
     ws.send(createMessage(MSG_TYPES.JOINED, {
       sessionId: session.sessionId,
+      pair_token: session.pairToken,
       replyToMessageId: msg.messageId
     }));
 
@@ -347,7 +353,9 @@ class UnifiedAppServer {
 
   handleReady(ws, msg) {
     const session = this.sessionStore.getSessionById(msg.sessionId);
-    if (!session) return;
+    if (!session || (session.phoneSocket !== ws && session.browserSocket !== ws)) {
+      throw { code: ERROR_CODES.UNAUTHORIZED, message: 'Unauthorized session' };
+    }
     const recipient = (session.phoneSocket === ws) ? session.browserSocket : session.phoneSocket;
     if (recipient) {
       try { recipient.send(createMessage(MSG_TYPES.PEER_READY, { sessionId: session.sessionId, role: (session.phoneSocket === ws) ? 'phone' : 'browser' })); } catch (_) {}
@@ -356,6 +364,9 @@ class UnifiedAppServer {
 
   handleClose(ws, msg) {
     const session = this.sessionStore.getSessionById(msg.sessionId);
+    if (!session || (session.phoneSocket !== ws && session.browserSocket !== ws)) {
+      throw { code: ERROR_CODES.UNAUTHORIZED, message: 'Unauthorized session' };
+    }
     if (session) {
       this.sessionStore.closeSession(session.sessionId, msg.reason || 'Closed by peer');
     }

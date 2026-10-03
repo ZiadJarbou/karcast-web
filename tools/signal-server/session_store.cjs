@@ -12,6 +12,7 @@ class SessionStore {
   constructor() {
     this.sessionsById = new Map();
     this.sessionsByCode = new Map();
+    this.sessionsByToken = new Map();
     this.phoneToSession = new Map();
     this.browserToSession = new Map();
 
@@ -51,7 +52,7 @@ class SessionStore {
     return 'sess_' + crypto.randomBytes(16).toString('hex');
   }
 
-  registerPhoneSession(phoneSocket, ip = '127.0.0.1') {
+  registerPhoneSession(phoneSocket, ip = '127.0.0.1', phoneToken = '') {
     if (!this.checkRateLimit(this.registerRateLimits, ip, 60000, MAX_REGISTERS_PER_MIN)) {
       throw { code: ERROR_CODES.RATE_LIMIT_EXCEEDED, message: 'Too many registration attempts. Please wait a minute.' };
     }
@@ -60,6 +61,13 @@ class SessionStore {
       this.closeSession(this.phoneToSession.get(phoneSocket).sessionId, 'Phone registered a new session');
     }
 
+    if (phoneToken && !/^[a-f0-9]{64}$/.test(phoneToken)) {
+      throw { code: ERROR_CODES.INVALID_MESSAGE_FORMAT, message: 'Invalid phone registration token' };
+    }
+    const pairToken = crypto.createHash('sha256').update('karcast-pair-v1:' +
+      (phoneToken || crypto.randomBytes(32).toString('hex'))).digest('hex');
+    const previous = this.sessionsByToken.get(pairToken);
+    if (previous) this.closeSession(previous.sessionId, 'Phone reconnected');
     const sessionId = this.generateSessionId();
     const pairingCode = this.generatePairingCode();
     const now = Date.now();
@@ -67,6 +75,7 @@ class SessionStore {
     const session = {
       sessionId,
       pairingCode,
+      pairToken,
       phoneSocket,
       browserSocket: null,
       createdAt: now,
@@ -77,27 +86,22 @@ class SessionStore {
     };
 
     this.sessionsById.set(sessionId, session);
+    this.sessionsByToken.set(pairToken, session);
     this.sessionsByCode.set(pairingCode, session);
     this.phoneToSession.set(phoneSocket, session);
 
     return session;
   }
 
-  joinBrowserSession(browserSocket, pairingCode, ip = '127.0.0.1') {
+  joinBrowserSession(browserSocket, pairingCode, ip = '127.0.0.1', pairToken = '') {
     if (!this.checkRateLimit(this.joinRateLimits, ip, 60000, MAX_JOINS_PER_MIN)) {
       throw { code: ERROR_CODES.RATE_LIMIT_EXCEEDED, message: 'Too many join attempts. Please wait a minute.' };
     }
 
-    const isAutoJoin = pairingCode === 'auto';
-    let session = this.sessionsByCode.get(pairingCode);
-    if (!session && isAutoJoin) {
-      // Auto-join active registered phone session for seamless pairing
-      const activeSessions = Array.from(this.sessionsById.values()).filter(s => s.phoneSocket && (s.browserSocket || Date.now() < s.expiresAt));
-      if (activeSessions.length > 0) {
-        session = activeSessions[activeSessions.length - 1];
-      }
+    if (pairToken && !/^[a-f0-9]{64}$/.test(pairToken)) {
+      throw { code: ERROR_CODES.PAIRING_CODE_INVALID, message: 'Invalid pairing token' };
     }
-
+    const session = pairToken ? this.sessionsByToken.get(pairToken) : this.sessionsByCode.get(pairingCode);
     if (!session) {
       throw { code: ERROR_CODES.PAIRING_CODE_INVALID, message: 'Invalid or unknown pairing code' };
     }
@@ -107,8 +111,9 @@ class SessionStore {
       throw { code: ERROR_CODES.PAIRING_CODE_EXPIRED, message: 'Pairing code has expired' };
     }
 
+    if (session.browserSocket === browserSocket) return session;
     if (session.browserSocket !== null) {
-      if (!isAutoJoin) {
+      if (!pairToken) {
         throw { code: ERROR_CODES.SESSION_ALREADY_PAIRED, message: 'This session code is already in use by another browser' };
       }
 
@@ -127,12 +132,14 @@ class SessionStore {
       throw { code: ERROR_CODES.SESSION_ALREADY_PAIRED, message: 'This session code is already in use by another browser' };
     }
 
+    const old = this.browserToSession.get(browserSocket);
+    if (old && old !== session) this.handleSocketDisconnect(browserSocket);
     session.browserSocket = browserSocket;
     session.pairedAt = Date.now();
     session.state = 'JOINED';
     this.browserToSession.set(browserSocket, session);
 
-    this.sessionsByCode.delete(pairingCode);
+    this.sessionsByCode.delete(session.pairingCode);
 
     return session;
   }
@@ -174,6 +181,7 @@ class SessionStore {
     }
 
     this.sessionsById.delete(sessionId);
+    this.sessionsByToken.delete(session.pairToken);
     this.sessionsByCode.delete(session.pairingCode);
   }
 
@@ -234,6 +242,7 @@ class SessionStore {
     clearInterval(this.cleanupInterval);
     this.sessionsById.clear();
     this.sessionsByCode.clear();
+    this.sessionsByToken.clear();
     this.phoneToSession.clear();
     this.browserToSession.clear();
     this.registerRateLimits.clear();

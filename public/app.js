@@ -60,7 +60,30 @@
 
   // Application State
   let state = 'READY'; // READY, PAIRING, ESTABLISHING_SECURE_CONNECTION, CONNECTED, RECONNECTING, FAILED
-  let pairingCode = 'auto';
+  let pairingCode = urlParams.get('pair_code') || '';
+  let pairToken = '';
+  const validPairToken = token => typeof token === 'string' && /^[a-f0-9]{64}$/.test(token);
+  function savePairToken(token) {
+    if (!validPairToken(token)) return;
+    pairToken = token;
+    try { window.localStorage.setItem('karcast_pair_token', token); } catch (_) {}
+  }
+  try { savePairToken(window.localStorage.getItem('karcast_pair_token')); } catch (_) {}
+  const linkToken = new URLSearchParams((window.location.hash || '').slice(1)).get('pair_token');
+  if (validPairToken(linkToken)) {
+    savePairToken(linkToken);
+    try { window.history.replaceState(null, '', window.location.pathname + window.location.search); } catch (_) {}
+  }
+  const pairForm = document.getElementById('pair-form');
+  const pairInput = document.getElementById('pair-code');
+  if (pairForm) pairForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const code = (pairInput.value || '').replace(/\s/g, '');
+    if (!/^\d{6}$/.test(code)) return;
+    pairToken = ''; pairingCode = code;
+    try { window.localStorage.removeItem('karcast_pair_token'); } catch (_) {}
+    connectAndJoin();
+  });
   let sessionId = null;
   let ws = null;
   let pc = null;
@@ -83,11 +106,16 @@
   let relayConfig = [];
   let relayHasKeyframe = false;
   let lastPresentedFrameAt = 0;
+  let relayReceivedAt = 0;
+  let relayRefreshAt = 0;
   let pendingCandidates = [];
   let signalingOnlyReconnect = false;
   let firstFrameTimer = null;
   let connectionStartedAt = 0;
   let mediaHealthTimer = null;
+  let renderedFrameAt = 0;
+  let renderedCallback = null;
+  let renderGeneration = 0;
   let phoneProgressAt = 0;
   let phoneSourceFrames = 0;
   // AA can take about a minute to send another IDR after a browser joins late.
@@ -290,7 +318,12 @@
   // 2. Public Signaling Client
   function connectAndJoin(preserveMedia = false) {
     signalingOnlyReconnect = preserveMedia && hasConnectedPeerTransport();
-    if (!pairingCode) pairingCode = 'auto';
+    if (!pairToken && !/^\d{6}$/.test(pairingCode)) {
+      if (pairForm) pairForm.hidden = false;
+      if (cardSubtitle) cardSubtitle.textContent = 'Enter the pairing code from KarCast on your phone, or open its copied pairing link.';
+      return;
+    }
+    if (pairForm) pairForm.hidden = true;
     retireSignalingSocket();
     connectAttempt++;
 
@@ -304,7 +337,7 @@
     clearConnectionWatchdog();
 
     try {
-      ws = new WebSocket(SIGNAL_URL);
+      ws = new WebSocket(SIGNAL_URL, pairToken ? ['karcast-v1', 'pair_token.' + pairToken] : ['karcast-v1']);
       ws.binaryType = 'arraybuffer';
       diagnostics.signalingState = 'connecting';
       diagnostics.connectionAttempts = connectAttempt;
@@ -337,6 +370,7 @@
         version: PROTOCOL_VERSION,
         type: 'join',
         pairingCode: pairingCode,
+        pair_token: pairToken,
         messageId: 'join_' + Date.now(),
         timestamp: Date.now()
       }));
@@ -442,6 +476,7 @@
   function handleSignalingMessage(msg) {
     switch (msg.type) {
       case 'joined':
+          savePairToken(msg.pair_token);
         if (signalingOnlyReconnect && sessionId === msg.sessionId) {
           signalingOnlyReconnect = false;
           connectAttempt = 0;
@@ -725,7 +760,10 @@
   }
 
   function requestVideoRefresh() {
-    if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'keyframe' }));
+    if (dc && dc.readyState === 'open') dc.send(JSON.stringify({ type: 'request_keyframe' }));
+    else if (useRelay && ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({
+      version: PROTOCOL_VERSION, type: 'request_keyframe', sessionId, timestamp: Date.now(), messageId: 'refresh_' + Date.now()
+    }));
   }
 
   function startMediaHealthChecks(peer) {
@@ -739,6 +777,15 @@
     let stalledSince = 0;
     let lastPresented = null;
     let presentedAt = Date.now();
+    renderedFrameAt = presentedAt;
+    const generation = ++renderGeneration;
+    if (renderedCallback !== null) remoteVideo.cancelVideoFrameCallback?.(renderedCallback);
+    const observeRender = () => {
+      if (pc !== peer || generation !== renderGeneration) return;
+      renderedFrameAt = Date.now();
+      renderedCallback = remoteVideo.requestVideoFrameCallback(observeRender);
+    };
+    if (remoteVideo.requestVideoFrameCallback) renderedCallback = remoteVideo.requestVideoFrameCallback(observeRender);
     mediaHealthTimer = setInterval(async () => {
       if (checking || pc !== peer || !mediaStarted) return;
       checking = true;
@@ -766,23 +813,19 @@
         const presented = quality ? quality.totalVideoFrames - quality.droppedVideoFrames : null;
         if (presented !== null && presented !== lastPresented) presentedAt = now;
         lastPresented = presented;
-        const progressAt = presented === null ? decodedAt : Math.min(decodedAt, presentedAt);
+        if (remoteVideo.requestVideoFrameCallback) presentedAt = renderedFrameAt;
+        const progressAt = remoteVideo.requestVideoFrameCallback ? presentedAt : (presented === null ? decodedAt : Math.min(decodedAt, presentedAt));
         diagnostics.presentationQuietMs = presented === null ? null : now - presentedAt;
         const sourceMoving = (receivedAt > 0 && now - receivedAt < 3000) ||
           (phoneProgressAt > 0 && now - phoneProgressAt < 3000);
-        if (!sourceMoving || now - progressAt <= 4000) stalledSince = 0;
+        if (!sourceMoving || now - progressAt <= 2000) stalledSince = 0;
         else if (!stalledSince) stalledSince = now;
-        if (sourceMoving && now - progressAt > 4000 && now - requestedAt > 3000) {
+        if (sourceMoving && now - progressAt > 2000 && now - requestedAt > 1000) {
           requestedAt = now;
           requestVideoRefresh();
           remoteVideo.play().catch(() => {});
         }
-        if (stalledSince && now - stalledSince > 11000) {
-          clearInterval(mediaHealthTimer);
-          diagnostics.videoStalls = (diagnostics.videoStalls || 0) + 1;
-          setUIState('RECONNECTING', 'Restoring video...', false);
-          scheduleReconnect();
-        }
+        // Keyframe recovery preserves PeerConnection and decoder state.
         renderDiagnostics();
       } catch (_) {} finally { checking = false; }
     }, 1000);
@@ -956,6 +999,7 @@
     if (!useRelay) return;
     const bytes = payload instanceof ArrayBuffer ? new Uint8Array(payload) : null;
     if (!bytes || bytes.byteLength < 13 || bytes[0] !== 75 || bytes[1] !== 67 || bytes[2] !== 1) return;
+    relayReceivedAt = Date.now();
     const flags = bytes[3];
     const data = bytes.slice(12);
     if (flags & 1) {
@@ -1020,12 +1064,12 @@
     if (state !== 'CONNECTED' || diagnostics.connectionPath !== 'secure-relay' || !lastPresentedFrameAt) return;
     // AA may legitimately stop producing frames on an unchanged screen.
     // A stalled decoder has pending work; silence alone is not a transport failure.
-    if (Date.now() - lastPresentedFrameAt < 12000 || !relayDecoder || !relayDecoder.decodeQueueSize) return;
+    if (Date.now() - lastPresentedFrameAt <= 2000 || Date.now() - relayReceivedAt > 2000 || document.hidden) return;
+    if (Date.now() - relayRefreshAt < 2000) return;
+    relayRefreshAt = Date.now();
     diagnostics.relayStalls = (diagnostics.relayStalls || 0) + 1;
-    lastPresentedFrameAt = 0;
-    setUIState('RECONNECTING', 'Video paused. Reconnecting...', false);
-    scheduleReconnect();
-  }, 3000);
+    requestVideoRefresh();
+  }, 1000);
   window.addEventListener('blur', handleCancelTouch);
 
   // 6. Diagnostics Mode (?metrics=1)
@@ -1037,6 +1081,10 @@
 
   // 7. Cleanup
   function cleanupWebRTC() {
+    ++renderGeneration;
+    if (renderedCallback !== null) remoteVideo.cancelVideoFrameCallback?.(renderedCallback);
+    renderedCallback = null;
+    renderedFrameAt = 0;
     clearTimeout(transportFallbackTimer);
     transportFallbackTimer = null;
     handleCancelTouch();
@@ -1075,7 +1123,6 @@
   // Auto-Connect Immediately on Load
   setTimeout(() => {
     if (state === 'READY') {
-      pairingCode = 'auto';
       connectAndJoin();
     }
   }, 300);
