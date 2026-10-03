@@ -91,6 +91,8 @@ const runReconnect = () => {
   peer.ontrack({ track: {} });
   node('remoteVideo').onplaying();
   assert.equal(hooks.getUIState(), 'CONNECTED');
+  assert.equal(node('pairing-overlay').hidden, true, 'Native Android Auto is unobstructed as soon as video starts');
+  assert.equal(node('connection-pill').hidden, true, 'Normal driving view has no KarCast badge over the map');
 
   const oldSocket = sockets.at(-1);
   const staleClose = oldSocket.onclose;
@@ -137,5 +139,24 @@ const runReconnect = () => {
   next.channel.onmessage({ data: JSON.stringify({ type: 'media_status', state: 'projecting', sourceFrames: 200 }) });
   await healthCheck();
   assert.equal(hooks.getUIState(), 'RECONNECTING');
+  runReconnect();
+  sockets.at(-1).onopen();
+  message({ type: 'joined', sessionId: 'restarted-phone' });
+  message({ type: 'peer_ready', role: 'phone' });
+  await flush();
+  const presentationPeer = peers.at(-1);
+  presentationPeer.connectionState = presentationPeer.iceConnectionState = 'connected';
+  presentationPeer.onconnectionstatechange();
+  presentationPeer.ontrack({ track: {} });
+  const videoNode = node('remoteVideo');
+  videoNode.getVideoPlaybackQuality = () => ({ totalVideoFrames: 10, droppedVideoFrames: 0 });
+  videoNode.onplaying();
+  const presentationHealth = [...timers.values()].find(t => t.ms === 1000).fn;
+  for (const [advanceMs, frames] of [[0, 10], [6000, 20], [12000, 30]]) {
+    clockMs += advanceMs;
+    presentationPeer.stats = new Map([['video', { type: 'inbound-rtp', kind: 'video', framesDecoded: frames, bytesReceived: frames * 100 }]]);
+    await presentationHealth();
+  }
+  assert.equal(hooks.getUIState(), 'RECONNECTING', 'Presentation stalls recover even while decoding continues');
   console.log('PASS: session expiry, early ICE, first-frame refresh, signaling recovery, and phone restart');
 })().catch(error => { console.error(error); process.exitCode = 1; });

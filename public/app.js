@@ -234,8 +234,8 @@
         setProgressMilestone(100);
         statusText.textContent = diagnostics.connectionPath === 'local-direct' ? 'Connected • Local Hotspot' : 'Connected';
         statusDot.className = 'status-dot connected';
-        overlay.hidden = false;
-        connectionPill.hidden = false;
+        overlay.hidden = true;
+        connectionPill.hidden = !SHOW_METRICS;
 
         if (cardHeading) cardHeading.textContent = 'Vehicle Connected';
         if (cardSubtitle) cardSubtitle.textContent = 'Android Auto is active.';
@@ -724,6 +724,8 @@
     let receivedAt = 0;
     let requestedAt = 0;
     let stalledSince = 0;
+    let lastPresented = null;
+    let presentedAt = Date.now();
     mediaHealthTimer = setInterval(async () => {
       if (checking || pc !== peer || !mediaStarted) return;
       checking = true;
@@ -736,18 +738,27 @@
         });
         if (!video || typeof video.framesDecoded !== 'number') return;
         const now = Date.now();
-        if (video.framesDecoded !== lastFrames) { decodedAt = now; stalledSince = 0; }
+        if (document.hidden) { decodedAt = presentedAt = now; stalledSince = 0; return; }
+        if (video.framesDecoded !== lastFrames) decodedAt = now;
         if (video.bytesReceived !== lastBytes) receivedAt = now;
         lastFrames = video.framesDecoded;
         lastBytes = video.bytesReceived;
         diagnostics.framesDecoded = lastFrames;
         diagnostics.framesDropped = video.framesDropped || 0;
         diagnostics.videoQuietMs = now - decodedAt;
+        // Decoding can continue while the video element stops presenting. Include
+        // presentation health so this case does not require a page refresh.
+        const quality = remoteVideo.getVideoPlaybackQuality?.();
+        const presented = quality ? quality.totalVideoFrames - quality.droppedVideoFrames : null;
+        if (presented !== null && presented !== lastPresented) presentedAt = now;
+        lastPresented = presented;
+        const progressAt = presented === null ? decodedAt : Math.min(decodedAt, presentedAt);
+        diagnostics.presentationQuietMs = presented === null ? null : now - presentedAt;
         const sourceMoving = (receivedAt > 0 && now - receivedAt < 3000) ||
           (phoneProgressAt > 0 && now - phoneProgressAt < 3000);
-        if (!sourceMoving || now - decodedAt <= 4000) stalledSince = 0;
+        if (!sourceMoving || now - progressAt <= 4000) stalledSince = 0;
         else if (!stalledSince) stalledSince = now;
-        if (sourceMoving && now - decodedAt > 4000 && now - requestedAt > 3000) {
+        if (sourceMoving && now - progressAt > 4000 && now - requestedAt > 3000) {
           requestedAt = now;
           requestVideoRefresh();
           remoteVideo.play().catch(() => {});
