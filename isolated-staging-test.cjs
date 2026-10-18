@@ -1,0 +1,36 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {validateUpgrade}=require('./staging-server.cjs');
+const RelayFreshness=require('./relay-freshness.cjs');
+const base={method:'GET',url:'/ws',headers:{host:'staging.karcast.app',upgrade:'websocket','sec-websocket-version':'13','sec-websocket-key':'AAAAAAAAAAAAAAAAAAAAAA=='}};
+const request=headers=>({...base,headers:{...base.headers,...headers}});
+assert.equal(validateUpgrade(base),true,'native phone registration without browser Origin');
+assert.equal(validateUpgrade(request({origin:'https://staging.karcast.app','sec-websocket-protocol':'karcast-v1, pair_token.'+'a'.repeat(64)})),true);
+for(const h of [{host:'app.karcast.app'},{origin:'https://app.karcast.app'},{origin:'https://evil.example'},{origin:'https://staging.karcast.app'},{'sec-websocket-protocol':'unrecognized'},{'sec-websocket-key':'invalid'}]) assert.equal(validateUpgrade(request(h)),false);
+let now=0;const relay=new RelayFreshness(()=>now), sent=[],controls=[];
+const browser={socket:{writableLength:0},sendBinary:b=>sent.push(Buffer.from(b))},phone={send:s=>controls.push(JSON.parse(s))};
+const packet=(flags,n)=>{const b=Buffer.alloc(20);b[0]=75;b[1]=67;b[2]=1;b[3]=flags;b[12]=n;return b;};
+const send=(flags,n)=>relay.forward(browser,phone,'session',packet(flags,n));
+send(4,1);send(1,2);send(2,3);send(0,4);
+browser.socket.writableLength=300*1024;
+assert.equal(send(0,5),false,'slow downstream retires whole AU and invalidates reference chain');
+browser.socket.writableLength=0;
+assert.equal(send(0,6),false,'cached dependent continuation cannot be marked healthy after a dropped reference');
+assert.equal(send(0,7),false);assert.equal(controls.length,1,'one refresh request per invalidated chain');
+require('./tools/signal-server/protocol.cjs').parseAndValidateMessage(JSON.stringify(controls[0]));
+const UnifiedAppServer=require('./server-core.js');const owner=new UnifiedAppServer();
+try {
+ const session={phoneSocket:phone,browserSocket:browser,sessionId:'session'};
+ owner.sessionStore.getSessionBySocket=s=>s===browser?session:null;
+ browser.socket.writableLength=1024*1024;
+ owner.forwardRelayControl(browser,{version:'1.0',type:'relay_touch',sessionId:'session',messageId:'touch',timestamp:1});
+ assert.equal(controls.at(-1).type,'relay_touch','media congestion must not block control');
+ browser.socket.writableLength=0;
+}finally{owner.sessionStore.destroy();}
+assert.equal(send(2,8),true);assert.deepEqual(sent.slice(-3).map(b=>b[12]),[1,2,8],'recovery begins with matching layout/config/key');
+assert.equal(send(0,9),true);
+browser.socket.writableLength=1;now=10;send(0,10);now=261;
+assert.equal(send(0,11),false,'small but old transport queue is also retired');
+const nextPhone={send:s=>controls.push(JSON.parse(s))};browser.socket.writableLength=0;
+assert.equal(relay.forward(browser,nextPhone,'new-session',packet(0,12)),false,'new ownership cannot inherit old reference state');
+console.log('PASS isolated staging upgrade boundary and bounded reference recovery');

@@ -31,6 +31,8 @@ const MSG_TYPES = {
   RELAY_START: 'relay_start',
   RELAY_TOUCH: 'relay_touch',
   RELAY_STATUS: 'relay_status',
+  SPLIT_START: 'split_start',
+  SPLIT_RECONNECT: 'split_reconnect',
 
   // Server -> Clients
   REGISTERED: 'registered',

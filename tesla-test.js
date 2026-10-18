@@ -239,9 +239,15 @@ function client(search = '', options = {}) {
   rawPicture(true); const replayDecoder = rawHealth.decoders.at(-1);
   for (let i = 0; i < 100; i++) rawPicture();
   assert.equal(replayDecoder.inputs.length, 8, 'Cached GOP replay has at most eight submitted pictures');
-  assert.equal(rawHealth.hooks.getDiagnostics().pendingVideoFrames, 101);
+  // A cold decoder must admit the bounded IDR reference chain before output.
+  // If it cannot drain within the live age budget, retire the whole chain.
+  rawHealth.advance(251); rawPicture();
+  assert(rawHealth.hooks.getDiagnostics().pendingVideoFrames <= 16, 'Live backlog has a small bound');
+  assert.equal(replayDecoder.closed, true, 'Obsolete encoded references are retired together');
   while (replayDecoder.pending.length) replayDecoder.output();
-  assert.equal(replayDecoder.inputs.length, 101, 'Pacing preserves every reference picture');
+  assert.equal(replayDecoder.inputs.length, 8, 'Obsolete replay is never sequentially submitted');
+  rawPicture(true); rawHealth.decoders.at(-1).output();
+  assert.equal(rawHealth.hooks.getUIState(), 'CONNECTED', 'Fresh IDR preserves AA view');
   assert.equal(rawHealth.hooks.getDiagnostics().pendingVideoFrames, 0);
   const framesAfterReplay = rawHealth.hooks.getDiagnostics().presentedFrames;
   rawHealth.decoders[0].output();
@@ -259,7 +265,7 @@ function client(search = '', options = {}) {
   rawHealth.advance(6000);
   rawPicture(true);
   for (let i = 0; i < 35; i++) rawPicture(false, 1024 * 1024);
-  assert.equal(rawHealth.hooks.getDiagnostics().lastRecoveryReason, 'Video decode queue exceeded its limit');
+  assert.match(rawHealth.hooks.getDiagnostics().lastRecoveryReason, /live video budget|queue exceeded its limit/, 'Age or small queue bound retires stale work before the historical byte cap');
   assert(rawHealth.hooks.getDiagnostics().videoQueueBytes <= 20 * 1024 * 1024, 'Unrendered compressed video stays within its memory budget');
   assert.equal(rawHealth.peers[0].closed, undefined, 'Queue overflow does not tear down the paired transport');
   rawHealth.hooks.cleanupWebRTC();

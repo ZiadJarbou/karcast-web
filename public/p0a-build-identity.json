@@ -1,0 +1,19 @@
+{
+  "browserBuild": "fieldlog-v69-startup1-20261018-01",
+  "targetHost": "staging.karcast.app",
+  "fieldCaptureId": "karcast-local-v69-startup-20261018-01",
+  "teslaUrl": "https://staging.karcast.app/?present=latest",
+  "browserAppJsSha256": null,
+  "android": {
+    "versionCode": 69,
+    "versionName": null,
+    "applicationId": "com.aistudio.teslastream.xkpmzq.local",
+    "sha256": null,
+    "buildPending": true
+  },
+  "productionDeployed": false,
+  "signalingOwner": "staging.karcast.app",
+  "signalingEndpoint": "wss://staging.karcast.app/ws",
+  "authorization": "CR-20261018-STARTUP-SPEED parts A-E authorized 18 Oct 2026 (owner, in-session). V65 local-only behaviour kept; V69 faster local reconnect, visibility retry, opted-in fallback returns to phone. Prepared only: not installed or deployed.",
+  "browserRevision": "fieldlog-v69-startup1-20261018-01"
+}

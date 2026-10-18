@@ -14,6 +14,7 @@ class WsSocket extends EventEmitter {
     this.fragments = [];
     this.fragmentOpcode = null;
     this.fragmentBytes = 0;
+    this.lastReceivedAt = Date.now();
 
     this.on('error', () => {}); // Prevent unhandled error crashes on TCP reset during teardown
 
@@ -55,14 +56,15 @@ class WsSocket extends EventEmitter {
     return this.sendFrame(0x1, Buffer.from(text, 'utf8'));
   }
 
-  sendBinary(data) {
-    return this.sendFrame(0x2, Buffer.isBuffer(data) ? data : Buffer.from(data));
+  sendBinary(data, onComplete) {
+    return this.sendFrame(0x2, Buffer.isBuffer(data) ? data : Buffer.from(data), onComplete);
   }
 
-  sendFrame(opcode, payload) {
-    if (this.closed || !this.socket.writable) return;
+  sendFrame(opcode, payload, onComplete) {
+    if (this.closed || !this.socket.writable) { onComplete?.(new Error('Socket closed')); return false; }
     // Reconnect a slow consumer rather than silently losing H264 reference frames.
     if (opcode === 0x2 && this.socket.writableLength > 4 * 1024 * 1024) {
+      onComplete?.(new Error('Video consumer too slow'));
       this.close(1013, 'Video consumer too slow');
       return false;
     }
@@ -86,14 +88,22 @@ class WsSocket extends EventEmitter {
     }
 
     try {
-      return this.socket.write(Buffer.concat([header, payload]));
+      return this.socket.write(Buffer.concat([header, payload]), onComplete);
     } catch (e) {
+      onComplete?.(e);
       this.handleClose();
       return false;
     }
   }
 
+  // V61: any received bytes (messages, pongs, heartbeats) prove the peer is alive.
+  sendPing() {
+    if (this.closed || !this.socket.writable) return false;
+    try { this.socket.write(Buffer.from([0x89, 0])); return true; } catch (_) { return false; }
+  }
+
   handleData(chunk) {
+    this.lastReceivedAt = Date.now();
     this.buffer = Buffer.concat([this.buffer, chunk]);
 
     while (this.buffer.length >= 2) {

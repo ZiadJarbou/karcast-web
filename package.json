@@ -1,22 +1,14 @@
 {
-  "name": "app-karcast-app",
+  "name": "karcast-tesla-staging-gateway",
   "version": "1.0.0",
-  "description": "Unified KarCast Vehicle Browser Application & Public Signaling Relay",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "test": "node test.js && node relay-test.js && node performance-test.js && node tesla-test.js && node pairing-test.js && node browser-pairing-test.js"
-  },
-  "keywords": [
-    "karcast",
-    "android-auto",
-    "webrtc",
-    "tesla",
-    "signaling"
-  ],
-  "author": "KarCast Team",
-  "license": "UNLICENSED",
+  "private": true,
   "engines": {
-    "node": ">=18.0.0"
-  }
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "main": "index.js",
+  "type": "commonjs",
+  "dependencies": {}
 }
