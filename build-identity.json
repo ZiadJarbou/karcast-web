@@ -1,0 +1,19 @@
+{
+  "browserBuild": "fieldlog-v63-local1-20261015-01",
+  "targetHost": "staging.karcast.app",
+  "fieldCaptureId": "karcast-local-v63-20261015-01",
+  "teslaUrl": "https://staging.karcast.app/?present=latest",
+  "browserAppJsSha256": null,
+  "android": {
+    "versionCode": 63,
+    "versionName": "2.0.21-rc-freshness2-vpnfix1-startup1-fieldlog2-sender2-recovery6-signal2-responsive2-recovery1-relaypace1-focus4-split1-staginglink1-fixes1-reconnect1-telemetry1-local1-staging1-local",
+    "applicationId": "com.aistudio.teslastream.xkpmzq.local",
+    "sha256": null,
+    "buildPending": true
+  },
+  "productionDeployed": false,
+  "signalingOwner": "staging.karcast.app",
+  "signalingEndpoint": "wss://staging.karcast.app/ws",
+  "authorization": "CR-20261015-LOCAL-HOTSPOT-TRANSPORT authorized 15 Oct 2026 (option C, VPS IP). Opt-in local hotspot transport; server relay unchanged and used as fallback. Not built, installed or deployed.",
+  "browserRevision": "fieldlog-v63-local1-20261015-01"
+}
