@@ -12,6 +12,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const WsSocket = require('./tools/signal-server/ws_frame.cjs');
+const RelayFreshness = require('./relay-freshness.cjs');
+const SplitMedia = require('./split-media.cjs');
 const { SessionStore } = require('./tools/signal-server/session_store.cjs');
 const {
   PROTOCOL_VERSION,
@@ -22,6 +24,12 @@ const {
   parseAndValidateMessage
 } = require('./tools/signal-server/protocol.cjs');
 
+// Optional bounded viewport, forwarded only after authenticated pairing succeeds.
+function viewportDescriptor(v) {
+  if (!v || v.schema !== 2 || !Number.isInteger(v.width) || !Number.isInteger(v.height) ||
+      v.width<240 || v.width>4096 || v.height<240 || v.height>4096 || v.width/v.height<0.5 || v.width/v.height>4) return undefined;
+  return {schema:2,width:v.width,height:v.height};
+}
 const PORT = Number(process.env.PORT) || 8090;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
@@ -35,10 +43,44 @@ function codeFingerprint(code) {
 
 class UnifiedAppServer {
   constructor(options = {}) {
-    this.port = options.port || PORT;
+    this.port = options.port ?? PORT;
+    this.allowedOrigins = options.allowedOrigins || null;
+    this.validateUpgrade = options.validateUpgrade || (() => true);
     this.sessionStore = new SessionStore();
     this.server = null;
     this.connections = new Set();
+    this.relayFreshness = new RelayFreshness();
+    this.splitMedia = new SplitMedia(this.sessionStore);
+    // V61: a paired browser that sends nothing (not even a WebSocket pong) for
+    // browserDeadMs is closed, so its session returns to REGISTERED in seconds
+    // instead of waiting ~2 minutes for TCP to notice a vanished network.
+    this.browserPingMs = options.browserPingMs ?? 2500;
+    this.browserDeadMs = options.browserDeadMs ?? 8000;
+    this.livenessTimer = null;
+    this.livenessCounters = { pings: 0, deadBrowsersClosed: 0 };
+  }
+
+  checkBrowserLiveness(now = Date.now()) {
+    for (const ws of this.sessionStore.browserToSession.keys()) {
+      // A slow but alive browser keeps draining queued video (its TCP stack
+      // acknowledges data), even when our ping waits behind that video.
+      const written = ws.socket?.bytesWritten;
+      if (typeof written === 'number' && ws.socket.writableLength > 0 && written !== ws.livenessBytesWritten) ws.lastReceivedAt = now;
+      ws.livenessBytesWritten = written;
+      const silentMs = now - (ws.lastReceivedAt || now);
+      if (silentMs >= this.browserDeadMs) {
+        this.livenessCounters.deadBrowsersClosed++;
+        console.log(`[BROWSER_DEAD] instanceId=${SERVER_INSTANCE_ID} silentMs=${silentMs}`);
+        if (typeof ws.handleClose === 'function') ws.handleClose(); // emits close -> session REGISTERED
+        continue;
+      }
+      if (silentMs >= this.browserPingMs) {
+        this.livenessCounters.pings++;
+        if (typeof ws.sendPing === 'function') ws.sendPing();
+        // App-level heartbeat lets the browser detect a dead server path too.
+        try { ws.send(createMessage(MSG_TYPES.HEARTBEAT, { serverLiveness: true })); } catch (_) {}
+      }
+    }
   }
 
   start() {
@@ -46,8 +88,12 @@ class UnifiedAppServer {
       this.server = http.createServer((req, res) => this.handleHttpRequest(req, res));
 
       this.server.on('upgrade', (req, socket, head) => {
+        if (!this.validateUpgrade(req)) {
+          socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+          return;
+        }
         const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-        if (url.pathname !== '/ws' && url.pathname !== '/') {
+        if (url.pathname !== '/ws' && url.pathname !== '/' && url.pathname !== '/ws/media') {
           socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
           socket.destroy();
           return;
@@ -56,9 +102,11 @@ class UnifiedAppServer {
         // Browser Origin Validation for WebSocket Connections
         const origin = req.headers['origin'];
         if (origin) {
-          const originHost = new URL(origin).host.toLowerCase();
+          let originHost;
+          try { originHost = new URL(origin).host.toLowerCase(); }
+          catch (_) { socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return; }
           const allowedHosts = ['app.karcast.app', 'localhost', '127.0.0.1'];
-          const allowed = allowedHosts.some(allowedHost =>
+          const allowed = this.allowedOrigins ? this.allowedOrigins.includes(origin) : allowedHosts.some(allowedHost =>
             originHost === allowedHost || originHost.startsWith(allowedHost + ':')
           );
           if (!allowed) {
@@ -68,6 +116,10 @@ class UnifiedAppServer {
           }
         }
 
+        const mediaGrant = url.pathname === '/ws/media' ? this.splitMedia.authorize(req) : null;
+        if (url.pathname === '/ws/media' && (!mediaGrant || url.search)) {
+          socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
+        }
         const ws = WsSocket.performHandshake(req, socket);
         if (!ws) return;
 
@@ -76,15 +128,26 @@ class UnifiedAppServer {
 
         this.connections.add(ws);
 
+        if (mediaGrant) {
+          this.splitMedia.bind(ws, mediaGrant);
+          ws.on('close', () => this.connections.delete(ws));
+          if (head.length) ws.handleData(head);
+          return;
+        }
         ws.on('message', text => this.handleWsMessage(ws, text, clientIp));
         ws.on('binary', data => this.handleWsBinary(ws, data));
         ws.on('close', () => {
           this.connections.delete(ws);
+          this.splitMedia.controlClosed(ws);
           this.sessionStore.handleSocketDisconnect(ws);
         });
+        if (head.length) ws.handleData(head);
       });
 
+      this.livenessTimer = setInterval(() => this.checkBrowserLiveness(), Math.min(1000, this.browserPingMs));
+      if (this.livenessTimer.unref) this.livenessTimer.unref();
       this.server.listen(this.port, () => {
+        this.port = this.server.address().port;
         console.log(`[SERVER_START] instanceId=${SERVER_INSTANCE_ID} startedAt=${SERVER_STARTED_AT} pid=${process.pid} port=${this.port}`);
         resolve(this.port);
       });
@@ -164,6 +227,10 @@ class UnifiedAppServer {
 
     try {
       switch (msg.type) {
+        case MSG_TYPES.SPLIT_START:
+        case MSG_TYPES.SPLIT_RECONNECT:
+          this.splitMedia.request(ws, msg); break;
+
         case MSG_TYPES.REGISTER:
           this.handleRegister(ws, msg, clientIp);
           break;
@@ -212,6 +279,7 @@ class UnifiedAppServer {
   }
 
   forwardRelayControl(ws, msg) {
+    if (msg.type === MSG_TYPES.RELAY_START) this.splitMedia.legacy(ws);
     const session = this.sessionStore.getSessionBySocket(ws);
     if (!session) throw { code: ERROR_CODES.UNAUTHORIZED, message: 'Relay session not found' };
     const target = session.phoneSocket === ws ? session.browserSocket : session.phoneSocket;
@@ -220,12 +288,13 @@ class UnifiedAppServer {
 
   handleWsBinary(ws, data) {
     const session = this.sessionStore.getSessionBySocket(ws);
-    if (!session || session.phoneSocket !== ws || !session.browserSocket) return;
+    if (!session || session.phoneSocket !== ws || !session.browserSocket || this.splitMedia.active(ws)) return;
     // Binary media is accepted only phone -> paired browser and is never persisted.
-    session.browserSocket.sendBinary(data);
+    this.relayFreshness.forward(session.browserSocket, ws, session.sessionId, data);
   }
 
   handleRegister(ws, msg, clientIp) {
+    ws.splitMediaCapable = msg.capabilities?.includes('ws-split-v1') === true;
     const session = this.sessionStore.registerPhoneSession(ws, clientIp, msg.phone_token || '');
     console.log(`[REGISTER] instanceId=${SERVER_INSTANCE_ID} codeHash=${codeFingerprint(session.pairingCode)} sess=${session.sessionId.slice(-6)} activeSessions=${this.sessionStore.sessionsById.size}`);
     ws.send(createMessage(MSG_TYPES.REGISTERED, {
@@ -262,10 +331,12 @@ class UnifiedAppServer {
     ws.send(createMessage(MSG_TYPES.JOINED, {
       sessionId: session.sessionId,
       pair_token: session.pairToken,
+      capabilities: session.phoneSocket?.splitMediaCapable ? ['ws-split-v1'] : [],
       replyToMessageId: msg.messageId
     }));
 
-    const peerReadyPhone = createMessage(MSG_TYPES.PEER_READY, { sessionId: session.sessionId, role: 'browser' });
+    session.browserViewport = viewportDescriptor(msg.viewport);
+    const peerReadyPhone = createMessage(MSG_TYPES.PEER_READY, { sessionId: session.sessionId, role: 'browser', viewport: session.browserViewport });
     const peerReadyBrowser = createMessage(MSG_TYPES.PEER_READY, { sessionId: session.sessionId, role: 'phone' });
 
     try { session.phoneSocket.send(peerReadyPhone); } catch (_) {}
@@ -358,7 +429,7 @@ class UnifiedAppServer {
     }
     const recipient = (session.phoneSocket === ws) ? session.browserSocket : session.phoneSocket;
     if (recipient) {
-      try { recipient.send(createMessage(MSG_TYPES.PEER_READY, { sessionId: session.sessionId, role: (session.phoneSocket === ws) ? 'phone' : 'browser' })); } catch (_) {}
+      try { recipient.send(createMessage(MSG_TYPES.PEER_READY, { sessionId: session.sessionId, role: (session.phoneSocket === ws) ? 'phone' : 'browser', viewport: session.browserSocket === ws ? session.browserViewport : undefined })); } catch (_) {}
     }
   }
 
@@ -374,6 +445,7 @@ class UnifiedAppServer {
 
   stop() {
     return new Promise(resolve => {
+      clearInterval(this.livenessTimer); this.livenessTimer = null;
       this.sessionStore.destroy();
       for (const conn of this.connections) {
         try { conn.close(1001, 'Server shutting down'); } catch (_) {}

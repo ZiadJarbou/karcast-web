@@ -1,0 +1,8 @@
+{
+  "browserBuild": "karcast-web-prod-20261018-01",
+  "browserRevision": "fieldlog-v65-taadavpn1-20261016-01",
+  "targetHost": "app.karcast.app",
+  "signalingEndpoint": "wss://app.karcast.app/ws",
+  "source": ".local-test/karcast-play-v68-20261018-01/candidate/server (V68 = V67 web server, unchanged public/ bytes)",
+  "productionDeployed": false
+}

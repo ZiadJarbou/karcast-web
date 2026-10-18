@@ -1,22 +1,16 @@
 {
-  "name": "app-karcast-app",
-  "version": "1.0.0",
-  "description": "Unified KarCast Vehicle Browser Application & Public Signaling Relay",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "test": "node test.js && node relay-test.js && node performance-test.js && node tesla-test.js && node pairing-test.js && node browser-pairing-test.js"
-  },
-  "keywords": [
-    "karcast",
-    "android-auto",
-    "webrtc",
-    "tesla",
-    "signaling"
-  ],
-  "author": "KarCast Team",
-  "license": "UNLICENSED",
+  "name": "karcast-app-production",
+  "version": "2.1.0",
+  "private": true,
   "engines": {
-    "node": ">=18.0.0"
-  }
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node isolated-production-test.cjs && node production-network-test.cjs && node production-entry-test.cjs"
+  },
+  "main": "index.js",
+  "type": "commonjs",
+  "dependencies": {},
+  "description": "KarCast app.karcast.app production entry (browser client + public signaling/relay)"
 }

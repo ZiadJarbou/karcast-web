@@ -105,6 +105,17 @@ html, body {
 }
 
 
+/* Schema 2 shows the complete native AA scene, including native side/bottom dock. */
+#stream-container.native-scene #content-viewport {
+  left:var(--frame-left); width:var(--frame-width); height:var(--content-frame-height);
+}
+#stream-container.native-scene #dock-viewport { display:none; }
+#stream-container.native-scene #relayCanvas { margin:0; }
+#stream-container.native-scene #remoteVideo {
+  transform:none; left:var(--source-left); top:var(--source-top);
+  height:var(--source-height); margin:0;
+}
+
 /* Connection Pill (Overlay when connected) */
 #connection-pill {
   position: fixed;
