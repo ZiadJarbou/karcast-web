@@ -1,8 +1,4 @@
-body.karcast-controls-reserved #app { height:calc(100% - 56px); }
-#karcast-feature-controls { position:fixed; bottom:0; left:0; right:0; height:56px; z-index:120; display:flex; justify-content:center; align-items:center; gap:10px; padding:4px 8px; background:#10171e; color:#edf5f3; font:14px system-ui; }
-#karcast-feature-controls button, #karcast-notification button { padding:10px 16px; font:inherit; border:1px solid #49625d; border-radius:8px; background:#152822; color:#e3fff4; cursor:pointer; }
-#karcast-feature-controls details pre { position:absolute; bottom:55px; right:0; width:min(680px,85vw); max-height:55vh; overflow:auto; background:#102019; padding:15px; white-space:pre-wrap; font:12px monospace; }
-#karcast-notification { position:fixed; bottom:80px; right:20px; z-index:121; width:min(380px,80vw); padding:20px; border:1px solid #3c6254; border-radius:14px; color:#f6fff9; background:#11251af2; font:21px/1.4 system-ui; box-shadow:0 6px 24px #0006; pointer-events:auto; }
-#karcast-notification[hidden] { display:none; }
-#karcast-notification div:first-child { font-weight:700; color:#70dfaa; }
-#karcast-notification button { margin:12px 12px 0 0; }
+/* V75 (CR-20261020-REMOVE-PAGE-MIC-BAR): no bottom bar; diagnostics only with &diag=1, as a corner toggle. */
+#karcast-diagnostics { position:fixed; top:6px; right:6px; z-index:120; color:#edf5f3; font:13px system-ui; }
+#karcast-diagnostics summary { cursor:pointer; padding:6px 10px; border:1px solid #49625d; border-radius:8px; background:#10171ecc; }
+#karcast-diagnostics pre { position:absolute; top:36px; right:0; width:min(680px,85vw); max-height:60vh; overflow:auto; background:#102019; padding:15px; white-space:pre-wrap; font:12px monospace; }

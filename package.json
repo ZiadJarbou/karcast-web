@@ -7,7 +7,7 @@
   },
   "scripts": {
     "start": "node index.js",
-    "test": "node isolated-production-test.cjs && node production-network-test.cjs && node production-entry-test.cjs"
+    "test": "node isolated-production-test.cjs && node production-network-test.cjs && node production-entry-test.cjs && node v85-car-identity-test.cjs"
   },
   "main": "index.js",
   "type": "commonjs",

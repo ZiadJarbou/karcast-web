@@ -1,8 +1,8 @@
 {
-  "browserBuild": "karcast-web-prod-20261018-01",
-  "browserRevision": "fieldlog-v65-taadavpn1-20261016-01",
+  "browserBuild": "karcast-web-prod-v85-20261022-01",
+  "browserRevision": "fieldlog-v82-langsync1-20261021-01",
   "targetHost": "app.karcast.app",
   "signalingEndpoint": "wss://app.karcast.app/ws",
-  "source": ".local-test/karcast-play-v68-20261018-01/candidate/server (V68 = V67 web server, unchanged public/ bytes)",
+  "source": "karcast-web-prod-20261018-01 server + V82 public/ (karcast-local-v82-langsync-20261021-01) + V85 car-identity API",
   "productionDeployed": false
 }

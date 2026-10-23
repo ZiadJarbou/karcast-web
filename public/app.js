@@ -9,6 +9,37 @@
 
 (function () {
   'use strict';
+  // V81 (CR-20261021-I18N-GLOBAL E): display text only. English stays the key, so diagnostics and telemetry are unchanged.
+  const I18N = window.KarCastI18n;
+  const browserLanguages = () => (typeof navigator !== 'undefined' && (navigator.languages || [navigator.language])) || [];
+  const pageStorage = () => { try { return window.localStorage; } catch (_) { return null; } };
+  try { if (I18N) { I18N.setLanguage(I18N.choose(window.location.search, browserLanguages(), I18N.recall(pageStorage()))); I18N.apply(document); } } catch (_) {}
+  const tr = text => { try { return I18N ? I18N.tr(text) : text; } catch (_) { return text; } };
+  // V82 (CR-20261021-PAGE-LANGUAGE-SYNC B): elements whose text follows the language; English stays the source.
+  const localizedElements = new Set();
+  const setText = (el, english) => {
+    if (!el) return;
+    try { if (I18N) { I18N.text(el, english); localizedElements.add(el); return; } } catch (_) {}
+    el.textContent = english;
+  };
+  const setNotice = (el, code, message) => {
+    if (!el) return;
+    try { if (I18N) { I18N.noticeText(el, code, message); localizedElements.add(el); return; } } catch (_) {}
+    el.textContent = message;
+  };
+  /** The phone's explicit language (null on Auto) wins, is remembered for the next visit and applies at once. */
+  function applyPhoneLanguage(tag) {
+    if (!I18N) return;
+    try {
+      const live = I18N.normalize(tag);
+      I18N.remember(pageStorage(), live);
+      const next = live || I18N.choose(window.location.search, browserLanguages(), null);
+      diagnostics.pageLanguage = next;
+      if (next === I18N.language) return;
+      I18N.setLanguage(next);
+      I18N.refresh(document, localizedElements);
+    } catch (_) {}
+  }
 
   const PROTOCOL_VERSION = '1.0';
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -25,18 +56,98 @@
   // (&fallback=relay). Otherwise the page keeps retrying the phone and asks for the hotspot.
   const LOCAL_FALLBACK_ALLOWED = (urlParams.get('fallback') || '').toLowerCase() === 'relay';
   const LOCAL_ONLY_MESSAGE = 'Connect the car to the phone hotspot, then keep this page open.';
-  let localSignalFailures = 0, localSignalOpened = false, localOnlyHint = false;
+  let localSignalFailures = 0, localSignalOpened = false, localOnlyHint = false, localFallbackAt = 0;
+  // V69 (CR-20261018-STARTUP-SPEED B): the phone is one hop away, so a stopped/restarted phone is
+  // re-found quickly. Internet signaling keeps the V61 timings.
+  // V72 (CR-20261019-LOCAL-CONNECT-TIMEOUT A/C): a Tesla needs longer than 2.5 s to open the phone socket
+  // (DNS + TCP + TLS + upgrade; 18 Oct Tesla needed several 6 s tries). 10 s, as TaaDa's socket watchdog.
+  const LOCAL_CONNECT_TIMEOUT_MS = 10000, LOCAL_PROBE_TIMEOUT_MS = 10000, LOCAL_RETRY_CAP_MS = 1500, LOCAL_RETURN_AFTER_MS = 15000;
+  // V72 B: a phone attempt still inside its connect window is not replaced by a visibility/online retry.
+  const localAttemptPending = () => onPhoneUrl() && ws && ws.readyState === 0 && wsStartedAt && Date.now() - wsStartedAt < LOCAL_CONNECT_TIMEOUT_MS;
+  const onPhoneUrl = () => LOCAL_SIGNAL && SIGNAL_URL === REQUESTED_SIGNAL_URL;
   function noteLocalSignalFailure() {
     if (!LOCAL_SIGNAL || SIGNAL_URL !== REQUESTED_SIGNAL_URL || localSignalOpened) return;
     if (++localSignalFailures < LOCAL_FALLBACK_AFTER) return;
     if (!LOCAL_FALLBACK_ALLOWED) {
+      probePhone();
       localOnlyHint = true;
       diagnostics.localOnlyWaits = (diagnostics.localOnlyWaits || 0) + 1;
-      if (messageBox) { messageBox.textContent = LOCAL_ONLY_MESSAGE; messageBox.hidden = false; }
+      if (messageBox) { setText(messageBox, LOCAL_ONLY_MESSAGE); messageBox.hidden = false; }
       return;
     }
     SIGNAL_URL = DEFAULT_SIGNAL_URL;
+    localFallbackAt = Date.now();
     diagnostics.localFallbacks = (diagnostics.localFallbacks || 0) + 1;
+  }
+  // V69 (CR A guard): an opted-in server fallback that shows no video (e.g. the phone refuses server
+  // media in local mode) goes back to the phone instead of waiting there until a page reload.
+  function maybeReturnToPhone(now) {
+    if (!LOCAL_SIGNAL || SIGNAL_URL === REQUESTED_SIGNAL_URL || !localFallbackAt || state === 'CONNECTED') return false;
+    if (now - localFallbackAt < LOCAL_RETURN_AFTER_MS) return false;
+    SIGNAL_URL = REQUESTED_SIGNAL_URL; localSignalFailures = 0; localSignalOpened = false; localFallbackAt = 0;
+    diagnostics.localReturns = (diagnostics.localReturns || 0) + 1;
+    return true;
+  }
+  // V71 (CR-20261019-LOCAL-LINK-DIAGNOSTICS C): bounded history of attempts to reach the phone, a one-off
+  // /health probe after the hotspot hint, shown in the diagnostics panel and sent once after each join.
+  // Diagnostic only: nothing here changes a timer, retry, fallback or the hint.
+  const LOCAL_ATTEMPT_RING = 20;
+  const localAttempts = { ring: [], timeout: 0, error: 0, close: 0, opened: 0, dropped: 0, probe: 'none', probeMs: -1 };
+  let localAttempt = null, localProbeArmed = true;
+  const pageStartedAt = Date.now();
+  function startLocalAttempt() { localAttempt = onPhoneUrl() ? { startedAt: Date.now(), openedAt: 0 } : null; }
+  function recordLocalAttempt(outcome, code, ms) {
+    const entry = { outcome, ms, code: code || 0, atMs: Date.now() - pageStartedAt,
+      visible: typeof document === 'undefined' || document.visibilityState !== 'hidden',
+      online: typeof navigator === 'undefined' || navigator.onLine !== false };
+    localAttempts[outcome]++;
+    localAttempts.ring.push(entry);
+    if (localAttempts.ring.length > LOCAL_ATTEMPT_RING) localAttempts.ring.shift();
+    diagnostics.localAttempts = localAttemptSummary();
+    optionalFeature('note', 'local_attempt', entry);
+  }
+  function noteLocalAttempt(outcome, code) {
+    const attempt = localAttempt;
+    if (!attempt) return;
+    if (outcome === 'opened') { attempt.openedAt = Date.now(); localProbeArmed = true; recordLocalAttempt('opened', 0, attempt.openedAt - attempt.startedAt); return; }
+    localAttempt = null;
+    if (attempt.openedAt) recordLocalAttempt('dropped', code, Date.now() - attempt.openedAt);
+    else recordLocalAttempt(outcome, code, Date.now() - attempt.startedAt);
+  }
+  function localAttemptSummary() {
+    const last = localAttempts.ring[localAttempts.ring.length - 1];
+    const summary = { timeout: localAttempts.timeout, error: localAttempts.error, close: localAttempts.close,
+      opened: localAttempts.opened, dropped: localAttempts.dropped, probe: localAttempts.probe };
+    if (localAttempts.probeMs >= 0) summary.probeMs = localAttempts.probeMs;
+    if (last) Object.assign(summary, { lastOutcome: last.outcome, lastCode: last.code, lastMs: last.ms, lastVisible: last.visible, lastOnline: last.online });
+    return summary;
+  }
+  function probePhone() {
+    if (!localProbeArmed || typeof fetch !== 'function' || typeof URL !== 'function') return;
+    localProbeArmed = false;
+    const started = Date.now();
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    let done = false, timer = 0;
+    const finish = result => {
+      if (done) return;
+      done = true; clearTimeout(timer);
+      localAttempts.probe = result; localAttempts.probeMs = Date.now() - started;
+      diagnostics.localAttempts = localAttemptSummary();
+      optionalFeature('note', 'local_probe', { result, ms: localAttempts.probeMs });
+    };
+    timer = setTimeout(() => { finish('timeout'); try { controller?.abort(); } catch (_) {} }, LOCAL_PROBE_TIMEOUT_MS);
+    try {
+      const url = new URL('/health', REQUESTED_SIGNAL_URL.replace(/^ws/i, 'http')).href;
+      fetch(url, { mode: 'no-cors', cache: 'no-store', credentials: 'omit', signal: controller?.signal })
+        .then(() => finish('reachable'), () => finish('failfast'));
+    } catch (_) { finish('failfast'); }
+  }
+  function sendLocalAttempts() {
+    if (!onPhoneUrl() || !ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify({ version: PROTOCOL_VERSION, type: 'local_attempts', sessionId,
+        messageId: 'attempts_' + Date.now(), timestamp: Date.now(), attempts: localAttemptSummary() }));
+    } catch (_) {}
   }
   const SHOW_METRICS = urlParams.get('metrics') === '1';
   const requestedTransport = (urlParams.get('transport') || '').toLowerCase();
@@ -161,8 +272,9 @@
   }
   function checkSignalingLiveness(now) {
     if (!ws) return;
-    if (ws.readyState === 0 && wsStartedAt && now - wsStartedAt > SIGNAL_CONNECT_TIMEOUT_MS) { noteLocalSignalFailure(); fastRejoin('signaling connect timeout'); return; }
-    if (ws.readyState === 1 && serverSendsLiveness && lastServerMessageAt && now - lastServerMessageAt > SIGNAL_DEAD_MS) fastRejoin('signaling silent');
+    const connectTimeoutMs = onPhoneUrl() ? LOCAL_CONNECT_TIMEOUT_MS : SIGNAL_CONNECT_TIMEOUT_MS;
+    if (ws.readyState === 0 && wsStartedAt && now - wsStartedAt > connectTimeoutMs) { noteLocalAttempt('timeout'); noteLocalSignalFailure(); fastRejoin('signaling connect timeout'); return; }
+    if (ws.readyState === 1 && serverSendsLiveness && lastServerMessageAt && now - lastServerMessageAt > SIGNAL_DEAD_MS) { noteLocalAttempt('close', 0); fastRejoin('signaling silent'); }
   }
   let connectionWatchdogTimer = null;
   let reconnectTimer = null;
@@ -335,7 +447,7 @@
     DIRECT_REQUESTED: ["relay", "ws-split"].includes(requestedTransport) ? 0 : 1,
     DIRECT_ATTEMPT_STARTED: 0, DIRECT_ICE_STATE: 0, DIRECT_FAILURE_REASON: 0, DIRECT_TIMEOUT: 0,
     FALLBACK_TO_RELAY_REASON: 0, FINAL_TRANSPORT: 0,
-    diagnosticsBuildId: 'fieldlog-v65-taadavpn1-20261016-01',
+    diagnosticsBuildId: 'fieldlog-v82-langsync1-20261021-01',
     presentLatest: PRESENT_LATEST ? 1 : 0,
     recoveryRequests: 0,
     relayStalls: 0,
@@ -364,7 +476,8 @@
       frames:diagnostics.presentedFrames || diagnostics.framesDecoded || 0,
       lastPresentedMonoMs:lastPresentedMonotonicMs, browserBuild:diagnostics.diagnosticsBuildId,layout:videoLayout,
       video:Object.fromEntries(["splitRecoverySourceBaselineUs","splitFirstSourceNewDecodedAt","splitFirstSourceNewPresentedAt","lastReceivedIdrSourceUs","lastPresentedSourceUs","lastFrameReceivedAt","lastFrameDecodedAt","lastFramePresentedAt","presentationRecoveries","presentationSurfaceErrors","DIRECT_REQUESTED","DIRECT_ATTEMPT_STARTED","DIRECT_ICE_STATE","DIRECT_FAILURE_REASON","DIRECT_TIMEOUT","FALLBACK_TO_RELAY_REASON","FINAL_TRANSPORT","presentedFrames","framesDecoded","firstFrameMs","frameAgeMs","pendingVideoFrames","videoQueueBytes","decodeQueueSize","staleVideoDrops","recoveryRequests","relayStalls","signalingReconnects","connectionAttempts","frameAgeSamples","frameAgeP50Ms","frameAgeP95Ms","frameAgeP99Ms","DIRECT_LOCAL_HOST","DIRECT_LOCAL_MDNS","DIRECT_LOCAL_SRFLX","DIRECT_LOCAL_RELAY","DIRECT_REMOTE_HOST","DIRECT_REMOTE_MDNS","DIRECT_PAIRS_TOTAL","DIRECT_PAIRS_FAILED","latePresentations","retirementsDeferred","transitAgeMs","presentLatest","fastRejoins"].filter(k=>Number.isFinite(diagnostics[k])).map(k=>[k,diagnostics[k]])),
-      aa:diagnostics.androidAutoState, signaling:ws?.readyState === WebSocket.OPEN ? 'OPEN' : 'NOT_OPEN' })); }
+      aa:diagnostics.androidAutoState, signaling:ws?.readyState === WebSocket.OPEN ? 'OPEN' : 'NOT_OPEN',
+      localAttempts: onPhoneUrl() || localAttempts.ring.length ? localAttemptSummary() : undefined })); }
     catch (_) { return null; }
   })();
   function optionalFeature(method, ...args) { try { optionalFeatures?.[method](...args); } catch (_) {} }
@@ -375,7 +488,7 @@
     state = newState;
     optionalFeature('transition', previousState, newState, userMessage || newState);
     if (messageBox) {
-      messageBox.textContent = userMessage;
+      setText(messageBox, userMessage);
       messageBox.hidden = !userMessage;
       messageBox.classList.toggle('error', isError);
     }
@@ -388,45 +501,45 @@
       case 'PHONE_NOT_AVAILABLE':
       case 'CONNECTION_FAILED':
         if (newState !== 'READY') resetProgress();
-        statusText.textContent = 'Waiting for phone...';
+        setText(statusText, 'Waiting for phone...');
         statusDot.className = 'status-dot connecting';
         overlay.hidden = false;
         connectionPill.hidden = true;
 
-        if (cardHeading) cardHeading.textContent = 'Connect your vehicle';
-        if (cardSubtitle) cardSubtitle.textContent = 'Follow these steps on your phone.';
+        if (cardHeading) setText(cardHeading, 'Connect your vehicle');
+        if (cardSubtitle) setText(cardSubtitle, 'Follow these steps on your phone.');
 
         if (waitingSteps) waitingSteps.hidden = false;
         if (progressTimeline) progressTimeline.hidden = true;
 
-        if (statusPanelTitle) statusPanelTitle.textContent = 'Waiting for your phone…';
-        if (statusPanelSub) statusPanelSub.textContent = 'This screen will connect automatically.';
+        if (statusPanelTitle) setText(statusPanelTitle, 'Waiting for your phone…');
+        if (statusPanelSub) setText(statusPanelSub, 'This screen will connect automatically.');
         break;
 
       case 'PAIRING':
         setProgressMilestone(5, 18);
-        statusText.textContent = 'Looking for phone...';
+        setText(statusText, 'Looking for phone...');
         statusDot.className = 'status-dot connecting';
         overlay.hidden = false;
         connectionPill.hidden = true;
 
-        if (cardHeading) cardHeading.textContent = 'Connect your vehicle';
-        if (cardSubtitle) cardSubtitle.textContent = 'Follow these steps on your phone.';
+        if (cardHeading) setText(cardHeading, 'Connect your vehicle');
+        if (cardSubtitle) setText(cardSubtitle, 'Follow these steps on your phone.');
         if (waitingSteps) waitingSteps.hidden = false;
         if (progressTimeline) progressTimeline.hidden = true;
-        if (statusPanelTitle) statusPanelTitle.textContent = 'Looking for your phone…';
-        if (statusPanelSub) statusPanelSub.textContent = 'Keep KarCast open after tapping Start Connection.';
+        if (statusPanelTitle) setText(statusPanelTitle, 'Looking for your phone…');
+        if (statusPanelSub) setText(statusPanelSub, 'Keep KarCast open after tapping Start Connection.');
         break;
 
       case 'ESTABLISHING_SECURE_CONNECTION':
         setProgressMilestone(30, 42);
-        statusText.textContent = 'Connecting...';
+        setText(statusText, 'Connecting...');
         statusDot.className = 'status-dot connecting';
         overlay.hidden = false;
         connectionPill.hidden = true;
 
-        if (cardHeading) cardHeading.textContent = 'Connecting your vehicle';
-        if (cardSubtitle) cardSubtitle.textContent = 'Preparing Android Auto for your screen.';
+        if (cardHeading) setText(cardHeading, 'Connecting your vehicle');
+        if (cardSubtitle) setText(cardSubtitle, 'Preparing Android Auto for your screen.');
 
         if (waitingSteps) waitingSteps.hidden = true;
         if (progressTimeline) progressTimeline.hidden = false;
@@ -438,7 +551,7 @@
         }
         if (badgeStep1) {
           badgeStep1.className = 'status-done';
-          badgeStep1.textContent = 'Done';
+          setText(badgeStep1, 'Done');
         }
 
         // Stage 2: Starting Android Auto (In progress)
@@ -448,7 +561,7 @@
         }
         if (badgeStep2) {
           badgeStep2.className = 'status-badge-progress';
-          badgeStep2.textContent = 'In progress';
+          setText(badgeStep2, 'In progress');
         }
 
         // Stage 3: Ready to drive (Up next)
@@ -459,11 +572,11 @@
         if (titleStep3) titleStep3.className = 'step-title muted';
         if (badgeStep3) {
           badgeStep3.className = 'status-muted';
-          badgeStep3.textContent = 'Up next';
+          setText(badgeStep3, 'Up next');
         }
 
-        if (statusPanelTitle) statusPanelTitle.textContent = 'Setting things up…';
-        if (statusPanelSub) statusPanelSub.textContent = 'Android Auto will appear here automatically.';
+        if (statusPanelTitle) setText(statusPanelTitle, 'Setting things up…');
+        if (statusPanelSub) setText(statusPanelSub, 'Android Auto will appear here automatically.');
         break;
 
       case 'CONNECTED':
@@ -473,8 +586,8 @@
         overlay.hidden = true;
         connectionPill.hidden = !SHOW_METRICS;
 
-        if (cardHeading) cardHeading.textContent = 'Vehicle Connected';
-        if (cardSubtitle) cardSubtitle.textContent = 'Android Auto is active.';
+        if (cardHeading) setText(cardHeading, 'Vehicle Connected');
+        if (cardSubtitle) setText(cardSubtitle, 'Android Auto is active.');
 
         if (waitingSteps) waitingSteps.hidden = true;
         if (progressTimeline) progressTimeline.hidden = false;
@@ -490,7 +603,7 @@
         }
         if (badgeStep2) {
           badgeStep2.className = 'status-done';
-          badgeStep2.textContent = 'Done';
+          setText(badgeStep2, 'Done');
         }
 
         if (circleStep3) {
@@ -500,11 +613,11 @@
         if (titleStep3) titleStep3.className = 'step-title';
         if (badgeStep3) {
           badgeStep3.className = 'status-done';
-          badgeStep3.textContent = 'Done';
+          setText(badgeStep3, 'Done');
         }
 
-        if (statusPanelTitle) statusPanelTitle.textContent = 'Connected & Streaming Live!';
-        if (statusPanelSub) statusPanelSub.textContent = 'Android Auto is streaming to your browser.';
+        if (statusPanelTitle) setText(statusPanelTitle, 'Connected & Streaming Live!');
+        if (statusPanelSub) setText(statusPanelSub, 'Android Auto is streaming to your browser.');
 
         setTimeout(() => {
           if (state === 'CONNECTED') {
@@ -521,7 +634,7 @@
     signalingOnlyReconnect = preserveMedia && hasConnectedPeerTransport();
     if (!pairToken && !/^\d{6}$/.test(pairingCode)) {
       if (pairForm) pairForm.hidden = false;
-      if (cardSubtitle) cardSubtitle.textContent = 'Enter the pairing code from KarCast on your phone, or open its copied pairing link.';
+      if (cardSubtitle) setText(cardSubtitle, 'Enter the pairing code from KarCast on your phone, or open its copied pairing link.');
       return;
     }
     if (pairForm) pairForm.hidden = true;
@@ -540,7 +653,7 @@
     try {
       ws = new WebSocket(SIGNAL_URL, pairToken ? ['karcast-v1', 'pair_token.' + pairToken] : ['karcast-v1']);
       ws.binaryType = 'arraybuffer';
-      wsStartedAt = Date.now(); lastServerMessageAt = 0;
+      wsStartedAt = Date.now(); lastServerMessageAt = 0; startLocalAttempt();
       diagnostics.signalingState = 'connecting';
       diagnostics.connectionAttempts = connectAttempt;
     } catch (err) {
@@ -554,7 +667,7 @@
 
     ws.onopen = () => {
       if (ws !== socket) return;
-      if (SIGNAL_URL === REQUESTED_SIGNAL_URL) { localSignalOpened = true; localSignalFailures = 0; }
+      if (SIGNAL_URL === REQUESTED_SIGNAL_URL) { localSignalOpened = true; localSignalFailures = 0; noteLocalAttempt('opened'); }
       if (!signalingOnlyReconnect) setProgressMilestone(12, 22);
       diagnostics.signalingState = 'open';
       clearInterval(heartbeatTimer);
@@ -604,6 +717,8 @@
 
     ws.onerror = () => {
       if (ws !== socket) return;
+      // The page retires the socket here, so its close event never follows: record the error now.
+      noteLocalAttempt('error', 0);
       diagnostics.signalingState = 'error';
       if (!hasConnectedPeerTransport()) {
         setUIState('PHONE_NOT_AVAILABLE');
@@ -612,7 +727,7 @@
     };
 
     ws.onclose = event => {
-      if (ws === socket) noteLocalSignalFailure();
+      if (ws === socket) { noteLocalAttempt('close', event.code); noteLocalSignalFailure(); }
       if (ws !== socket) return;
       stopSplitMedia();
       diagnostics.signalingState = 'closed';
@@ -652,7 +767,8 @@
     retireSignalingSocket();
     // Keep the vehicle page available across phone Stop/Start cycles.
     // V61: cap at 5s (was 10s) so a recovered network is used within seconds.
-    const delay = Math.min(SIGNAL_RETRY_CAP_MS, 2500 * Math.max(1, connectAttempt));
+    const delay = onPhoneUrl() ? Math.min(LOCAL_RETRY_CAP_MS, 500 * Math.max(1, connectAttempt))
+      : Math.min(SIGNAL_RETRY_CAP_MS, 2500 * Math.max(1, connectAttempt));
     reconnectTimer = setTimeout(() => connectAndJoin(preserveMedia), delay);
   }
 
@@ -692,6 +808,15 @@
 
   function handleSignalingMessage(msg) {
     switch (msg.type) {
+      case 'phone_notice':
+        // V69 (CR-20261018-STARTUP-SPEED D): the phone tells the driver what only they can fix
+        // (e.g. restart Android Auto's head-unit server). Text only; cleared when the phone clears it.
+        diagnostics.phoneNotice = msg.code || '';
+        if (messageBox) {
+          if (msg.message) { setNotice(messageBox, msg.code, String(msg.message).slice(0, 600)); messageBox.hidden = false; }
+          else if (!localOnlyHint) messageBox.hidden = true;
+        }
+        break;
       case 'split_capability':
         if (splitSelected && msg.sessionId === sessionId) {
           if (!splitClient) splitClient = new window.KarCastSplitMediaClient({
@@ -713,7 +838,12 @@
       case 'split_unavailable':
         if (splitSelected) { stopSplitMedia(); splitSelected = false; startRelay(); }
         break;
+      case 'phone_language':
+        // V82 (CR-20261021-PAGE-LANGUAGE-SYNC A/B): the app's language changed during the session.
+        applyPhoneLanguage(msg.language);
+        break;
       case 'joined':
+        if (msg.local === true) applyPhoneLanguage(msg.language);
           savePairToken(msg.pair_token);
         // A renewed signaling registration can assign the SAME paired phone a
         // new session ID. Recent status on the live peer proves media survived.
@@ -738,6 +868,7 @@
           splitSelected = false; diagnostics.splitFallbackReason = 'capability unavailable';
         }
         if (useRelay) startRelay();
+        sendLocalAttempts();
         break;
 
       case 'relay_status':
@@ -1668,7 +1799,7 @@
       stallOverlay = document.createElement('div');
       stallOverlay.setAttribute('role', 'status');
       stallOverlay.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:50;padding:8px 14px;border-radius:16px;background:rgba(10,14,20,.82);color:#fff;font:14px system-ui,sans-serif;pointer-events:none';
-      stallOverlay.textContent = 'Video paused — reconnecting…';
+      setText(stallOverlay, 'Video paused — reconnecting…');
       document.body.appendChild(stallOverlay);
     }
     if (stallOverlay) stallOverlay.hidden = !show;
@@ -1676,9 +1807,18 @@
   // V61: reconnect the moment the device reports its network is back.
   window.addEventListener('online', () => {
     if (ws && ws.readyState === 1 && lastServerMessageAt && Date.now() - lastServerMessageAt < 3000) return;
+    if (localAttemptPending()) return;
     if (pairToken || /^\d{6}$/.test(pairingCode)) fastRejoin('network online');
   });
+  // V69: a car screen coming back to the page retries the phone at once instead of after back-off.
+  document.addEventListener && document.addEventListener('visibilitychange', () => {
+    if (document.hidden || state === 'CONNECTED' || !onPhoneUrl()) return;
+    if (ws && ws.readyState === 1) return;
+    if (localAttemptPending()) return;
+    if (pairToken || /^\d{6}$/.test(pairingCode)) fastRejoin('page visible');
+  });
   setInterval(() => {
+    if (maybeReturnToPhone(Date.now())) fastRejoin('return to phone');
     checkSignalingLiveness(Date.now());
     updateStallOverlay(Date.now());
     if (state !== 'CONNECTED' || !['secure-relay', 'secure-split-media', 'local-raw'].includes(diagnostics.connectionPath) || !lastPresentedFrameAt) return;
@@ -1825,6 +1965,7 @@
     getFrameAgeHistogram: () => frameAgeBuckets.slice(),
     sendTouch,
     applyVideoLayout, browserViewport, getTouchPoint, presentationGeometry, updatePresentationLayout,
-    cleanupWebRTC
+    cleanupWebRTC, checkSignalingLiveness, maybeReturnToPhone, getSignalUrl: () => SIGNAL_URL,
+    getLocalAttempts: () => ({ summary: localAttemptSummary(), ring: localAttempts.ring.slice() })
   };
 })();

@@ -190,7 +190,7 @@ html, body {
   flex-direction: column;
   gap: 20px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
-  text-align: left;
+  text-align: start; /* V81 (CR-20261021-I18N-GLOBAL E): follows dir (RTL for Arabic) */
 }
 
 /* Brand Header */
@@ -514,3 +514,6 @@ html, body {
     align-self: flex-start;
   }
 }
+
+/* V81 (CR-20261021-I18N-GLOBAL E): pairing timeline mirrored for right-to-left languages; video area stays LTR. */
+[dir="rtl"] .timeline-line { left: auto; right: 17px; }

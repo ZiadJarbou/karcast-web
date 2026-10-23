@@ -48,11 +48,13 @@ function rawUpgrade(port,host,origin){
   assert.equal(h.browserBuild,identity.browserBuild);assert.equal(h.splitMedia,'ws-split-v1');
   assert.equal('staging' in h,false,'production health must not claim staging');
   assert.equal(health.headers['cache-control'],'no-store');
-  for(const name of ['index.html','app.js','style.css','session-features.js','session-features.css','mic-uplink.js','split-media-client.js']){
+  for(const name of ['index.html','app.js','style.css','session-features.js','session-features.css','mic-uplink.js','split-media-client.js','i18n.js']){
    const r=await get('/'+name);assert.equal(r.status,200,name);
    assert.equal(r.body.equals(fs.readFileSync(path.join(__dirname,'public',name))),true,name+' bytes');
   }
-  const root=await get('/');assert.equal(root.status,200);assert.match(root.headers['content-type'],/^text\/html/);
+  // V85 (CR-20261022-TAADA-STYLE-PLAY-RELEASE F): bare / redirects to the car link; the queried page is served.
+  const root=await get('/?transport=relay');assert.equal(root.status,200);assert.match(root.headers['content-type'],/^text\/html/);
+  assert.equal((await get('/')).status,302,'bare / is the car link');
   for(const p of ['/p0-diagnostics.js','/p0a-signaling.js','/p0a-build-identity.json','/p0/events','/../server-core.js','/server-core.js','/package.json','/production-identity.json'])
    assert.equal((await get(p)).status,404,p);
   assert.equal((await get('/p0/events','app.karcast.app','POST')).status,405,'no diagnostic upload route');
